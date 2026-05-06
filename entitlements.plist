@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Required for Python + native extensions (numpy, soundfile, etc.)
+        to run under the hardened runtime that notarization mandates.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+        Allows loading of our bundled dylibs (rubberband, ffmpeg deps)
+        without requiring them to be individually signed.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Gradio runs a local HTTP server and opens a browser tab -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

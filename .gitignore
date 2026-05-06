@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# DMG / release binaries — these are large; distribute separately
+*.dmg
+*.pkg
+*.app
+
+# Temp / lock files
+*.tmp
+~$*
+.~lock.*
+
+# Presentation source (large binary; check in if you want version history)
+*.pptx
+*.pdf
+
+# Slide exports (regenerate from source)
+slide-*.jpg
+visuals/
+
+# Secrets / notarization credentials (never commit these)
+*.p8
+*.p12
+notarize_creds.sh
+.env
+
+# Editor
+.vscode/
+.idea/
+*.swp
