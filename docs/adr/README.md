@@ -40,6 +40,7 @@ folder corresponds to an item in the digest's "danger zones" list.
 | [0012](0012-max-random-trimodal.md)           | MAX RANDOM uses trimodal distribution, not log-uniform      | Accepted |
 | [0013](0013-auto-shuffle-max-random.md)       | Selecting MAX RANDOM auto-checks the shuffle box            | Accepted |
 | [0014](0014-gradio-quirks-collected.md)       | Collected Gradio behavior quirks (living catalog)           | Accepted |
+| [0015](0015-modular-file-structure.md)        | Modular file structure — extract `ui_assets.py` (Phase 1)  | Accepted |
 
 ## Numbering
 

@@ -29,7 +29,10 @@ copy is `build.sh`'s `VERSION="0.1.3"`).
 ## File map
 
 ```
-app.py                            ← everything: bootstrap, DSP, FX, INIT_JS, CSS, UI, __main__
+app.py                            ← bootstrap, audio DSP, FX, Gradio UI, __main__
+                                     (~1 840 lines after Phase-1 modularisation — ADR-0015)
+ui_assets.py                      ← static browser content: INIT_JS, CUSTOM_CSS,
+                                     base64 GIF Easter eggs, icon (ADR-0015)
 slurmify.spec                     ← PyInstaller spec
 build.sh                          ← codesign + notarize + DMG
 entitlements.plist                ← macOS hardened-runtime entitlements
@@ -51,50 +54,62 @@ SLURMER_BETATEST_INSTRUCTIONS.md  ← release notes for testers
 SLURMCORE_COMPARISON.md           ← long-form: how Slurmify differs from general slurmcore (also bundled in DMG)
 LICENSE                           ← GPL-3.0 + third-party notices (also bundled in DMG)
 AGENT_DIGEST.md                   ← THIS FILE
-docs/adr/                         ← architecture decision records (0001-0014)
+docs/adr/                         ← architecture decision records (0001-0015)
 graphic/
     max.gif                       ← Max-the-tester face (hover gif on MAX RANDOM radio)
     hobermanmax.gif               ← Hoberman-Max (hover gif on 🎲 randomize all button)
     RGBOB.gif                     ← Bob (hover gif on 📁 reveal temp files button)
 ```
 
+### Planned future modules (not yet extracted — see ADR-0015)
+
+```
+slurmcore.py  (Phase 2) — pure audio DSP: detect_slice_points, slurmify,
+                           apply_envelope, burn_fx, FX helper functions
+slurmio.py    (Phase 3) — filesystem IO: load_audio, _write_audio,
+                           temp-file management, _asset path resolution
+slurm_ui.py   (Phase 4) — Gradio orchestration: build_ui, process,
+                           render_video, _quit_app
+```
+
 ---
 
 ## Section signposts inside `app.py` (grep these comments)
 
-| Marker (unique substring) | What lives there |
-|---|---|
-| `# PyInstaller bundle bootstrap` | sys.frozen detection, ffmpeg/numba env setup, `_asset()` |
-| `# Session-scoped temp directory` | `SESSION_TMP_DIR`, `_new_temp_path`, `_reveal_temp_dir`, atexit + orphan sweep (ADR-0011) |
-| `# Audio engine` | `load_audio`, `detect_slice_points` (incl. MAX RANDOM trimodal — ADR-0012), `apply_envelope` |
-| `def slurmify(` | the main DSP pipeline (load → trim → stretch → slice → fx → write); stutter engine: stutter_skip_ms / stutter_max_reps / stutter_spread (v0.1.2); adaptive beat-grid + bpm_override (v0.1.3) |
-| `# Output format helpers` | `_SF_FORMATS`, `_FFMPEG_FORMATS`, `_write_audio` |
-| `# Gradio UI` | header that introduces the UI half of the file |
-| `INIT_JS = """` | the multi-line browser-side JS string |
-| `// ── Skin switcher ──` | URL-param + localStorage skin selection (ADR-0007) |
-| `// ── Web Audio FX chain ──` | FX state, `_fxWalk`, `_fxCurve`, `_fxApply`, `_fxSetup` |
-| `// ── Audio-reactive viz loop` | rAF loop powering VU meter and acid halo |
-| `// ── MAX RANDOM hover gif ──` | INIT_JS that tags the MAX RANDOM radio label with `.slurm-max-option` |
-| `// ── Allow ANY file type on the audio input ──` | INIT_JS strip-`accept` (legacy/belt-and-suspenders; the real fix for video is ADR-0009) |
-| `CUSTOM_CSS = """` | the multi-line CSS string (default + acid + hardware skins) |
-| `_MAX_GIF_B64 = "` | base64 Max-on-MAX-RANDOM hover gif + `.slurm-max-option` CSS (right-slide) |
-| `_BOB_GIF_B64 = "` | base64 Bob hover gif on reveal-temp-files button + `.slurm-bob-option` CSS (bottom-up spring) |
-| `_HOBERMAN_GIF_B64 = "` | base64 Hoberman-Max hover gif on randomize-all button + `.slurm-max-popup` CSS (bottom-up spring) |
-| `# ── Compact form controls` | radio chip rules, `.slurm-dropdown` (ADR-0014 §4), `.slurm-audio` |
-| `# ── Audio Effects DSP` | `_fx_distortion`, `_fx_ring_mod`, `_fx_delay`, `_fx_phaser` |
-| `def burn_fx(` | bake current FX into a new audio file (Python parity for live JS chain) |
-| `# ── Video export (YouTube-ready MP4) ──` | `render_video` and friends; ADR-0006 lives here |
-| `def _jumble_name(` | filename-shuffle helper for the MP4 export |
-| `def _leetify(` | leet-substitution helper used by `_jumble_name` |
-| `def render_video(` | main video-export function — auto-burns FX if FX-burned-output selected without prior burn |
-| `def process(` | UI shim around `slurmify()` (validation, gr.Error wrapping) |
-| `def _quit_app(` | Quit button handler — uses `os._exit(0)` after a 0.8 s timer |
-| `def build_ui(` | the Gradio Blocks layout |
-| `def _route_upload(` | universal upload router — audio passes through, video → ffmpeg extract (ADR-0009) |
-| `def _on_resolution_change(` | auto-checks shuffle box on MAX RANDOM (ADR-0013) |
-| `def _randomize_all(` | 🎲 randomize all button — random slurm params (musical bias) |
-| `def _reveal_temp_dir(` | 📁 reveal temp files — opens SESSION_TMP_DIR in OS file browser |
-| `if __name__ == "__main__":` | `_fonts`, `_favicon_js` (ADR-0010), `_head`, `ui.launch(...)` |
+| Marker (unique substring) | File | What lives there |
+|---|---|---|
+| `# PyInstaller bundle bootstrap` | app.py | sys.frozen detection, ffmpeg/numba env setup, `_asset()` |
+| `# Session-scoped temp directory` | app.py | `SESSION_TMP_DIR`, `_new_temp_path`, `_reveal_temp_dir`, atexit + orphan sweep (ADR-0011) |
+| `# Audio engine` | app.py | `load_audio`, `detect_slice_points` (incl. MAX RANDOM trimodal — ADR-0012), `apply_envelope` |
+| `def slurmify(` | app.py | the main DSP pipeline (load → trim → stretch → slice → fx → write); stutter engine v0.1.2; adaptive beat-grid + bpm_override v0.1.3 |
+| `# Output format helpers` | app.py | `_SF_FORMATS`, `_FFMPEG_FORMATS`, `_write_audio` |
+| `# Gradio UI` | app.py | header that introduces the UI half of the file |
+| `from ui_assets import` | app.py | import of all static browser content — edit the assets in ui_assets.py, not here |
+| `INIT_JS = """` | **ui_assets.py** | the multi-line browser-side JS string (~500 lines) |
+| `// ── Skin switcher ──` | ui_assets.py | URL-param + localStorage skin selection (ADR-0007) |
+| `// ── Web Audio FX chain ──` | ui_assets.py | FX state, `_fxWalk`, `_fxCurve`, `_fxApply`, `_fxSetup` |
+| `// ── Audio-reactive viz loop` | ui_assets.py | rAF loop powering VU meter and acid halo |
+| `// ── MAX RANDOM hover gif ──` | ui_assets.py | INIT_JS that tags the MAX RANDOM radio label with `.slurm-max-option` |
+| `// ── Allow ANY file type on the audio input ──` | ui_assets.py | INIT_JS strip-`accept` (legacy; real fix for video is ADR-0009) |
+| `CUSTOM_CSS = """` | **ui_assets.py** | the multi-line CSS string (default + acid + hardware skins) |
+| `_MAX_GIF_B64 = "` | ui_assets.py | base64 Max hover gif + CSS (right-slide). Must precede the CSS += f-string that embeds it. |
+| `_BOB_GIF_B64 = "` | ui_assets.py | base64 Bob hover gif + CSS (bottom-up spring). Must precede its CSS += f-string. |
+| `_HOBERMAN_GIF_B64 = "` | ui_assets.py | base64 Hoberman-Max hover gif + CSS (bottom-up spring). Must precede its CSS += f-string. |
+| `# ── Compact form controls` | ui_assets.py | radio chip rules, `.slurm-dropdown` (ADR-0014 §4), `.slurm-audio` |
+| `# ── Audio Effects DSP` | app.py | `_fx_distortion`, `_fx_ring_mod`, `_fx_delay`, `_fx_phaser` |
+| `def burn_fx(` | app.py | bake current FX into a new audio file (Python parity for live JS chain) |
+| `# ── Video export (YouTube-ready MP4) ──` | app.py | `render_video` and friends; ADR-0006 lives here |
+| `def _jumble_name(` | app.py | filename-shuffle helper for the MP4 export |
+| `def _leetify(` | app.py | leet-substitution helper used by `_jumble_name` |
+| `def render_video(` | app.py | main video-export function — auto-burns FX if FX-burned-output selected without prior burn |
+| `def process(` | app.py | UI shim around `slurmify()` (validation, gr.Error wrapping) |
+| `def _quit_app(` | app.py | Quit button handler — uses `os._exit(0)` after a 0.8 s timer |
+| `def build_ui(` | app.py | the Gradio Blocks layout |
+| `def _route_upload(` | app.py | universal upload router — audio passes through, video → ffmpeg extract (ADR-0009) |
+| `def _on_resolution_change(` | app.py | auto-checks shuffle box on MAX RANDOM (ADR-0013) |
+| `def _randomize_all(` | app.py | 🎲 randomize all button — random slurm params (musical bias) |
+| `def _reveal_temp_dir(` | app.py | 📁 reveal temp files — opens SESSION_TMP_DIR in OS file browser |
+| `if __name__ == "__main__":` | app.py | `_fonts`, `_favicon_js` (ADR-0010), `_head`, `ui.launch(...)` |
 
 ---
 
@@ -301,6 +316,8 @@ UI. No other changes — `_write_audio` dispatches by name.
 | MAX RANDOM distribution | [0012](docs/adr/0012-max-random-trimodal.md) | Trimodal (stutter/chop/held), NOT log-uniform. Bucket boundaries 5-30 / 100-500 / 1000-4000 ms — gaps are the design. |
 | MAX RANDOM auto-shuffle | [0013](docs/adr/0013-auto-shuffle-max-random.md) | Selecting MAX RANDOM auto-checks shuffle box via `resolution.change()` handler. Don't internalize this in `slurmify()`. |
 | Gradio quirks catalog | [0014](docs/adr/0014-gradio-quirks-collected.md) | First place to look when a Gradio component does something weird. Living document. |
+| ui_assets.py GIF/CSS ordering | [0015](docs/adr/0015-modular-file-structure.md) | GIF b64 vars and CSS += blocks are interleaved on purpose — each GIF must be defined before the CSS f-string that embeds it. Do not reorder. |
+| hiddenimports in slurmify.spec | [0015](docs/adr/0015-modular-file-structure.md) | Every new local module (ui_assets, slurmcore, …) MUST appear in hiddenimports or the .app crashes at startup. |
 
 ---
 
@@ -313,15 +330,15 @@ python app.py
 # → http://127.0.0.1:7860
 # Try skins via:  ?skin=acid  |  ?skin=hardware  |  ?skin=default
 
-# Syntax check after edits
-python3 -c "import ast; ast.parse(open('app.py').read())"
+# Syntax check after edits (check BOTH files — ui_assets.py is now separate)
+python3 -c "import ast; ast.parse(open('app.py').read()); print('app.py OK')"
+python3 -c "import ast; ast.parse(open('ui_assets.py').read()); print('ui_assets.py OK')"
 
-# Quick CSS brace check
+# Quick CSS brace check (CUSTOM_CSS lives in ui_assets.py now — ADR-0015)
 python3 -c "
-import re
-src = open('app.py').read()
-m = re.search(r'^CUSTOM_CSS = \"\"\"(.*?)^\"\"\"', src, re.MULTILINE | re.DOTALL)
-o, c = m.group(1).count('{'), m.group(1).count('}')
+import sys; sys.path.insert(0, '.')
+from ui_assets import CUSTOM_CSS
+o, c = CUSTOM_CSS.count('{'), CUSTOM_CSS.count('}')
 print(f'CUSTOM_CSS braces: {o} open / {c} close · {\"OK\" if o == c else \"MISMATCHED\"}')"
 
 # Regenerate the loop MP4 from source PNGs (see ADR-0006)
