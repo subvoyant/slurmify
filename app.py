@@ -48,91 +48,23 @@ try:
 except Exception:
     pass  # fall back to whatever ffmpeg is on the system PATH
 
-# ---------------------------------------------------------------------------
-# Asset path helper — works in both dev and frozen bundle modes.
-# In dev: looks relative to this file. In bundle: looks in sys._MEIPASS.
-# ---------------------------------------------------------------------------
-def _asset(relative_path: str) -> str:
-    """Return the absolute path to a bundled asset file."""
-    if getattr(sys, "frozen", False):
-        base = sys._MEIPASS  # type: ignore[attr-defined]
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, relative_path)
-
-
-# ---------------------------------------------------------------------------
-# Session-scoped temp directory — keeps user disks tidy.
+# ── Filesystem IO layer — now lives in slurmio.py ───────────────────────────
+# _asset, SESSION_TMP_DIR, _new_temp_path, _reveal_temp_dir,
+# SUPPORTED_EXTS, TARGET_SR, load_audio, and _write_audio are all
+# defined in slurmio.py (Phase 3 of the modularisation — ADR-0017).
 #
-# All audio outputs and video exports go into a per-session subdirectory of
-# the system temp dir. On normal Python exit, atexit wipes the whole subdir.
-# On startup we also sweep up any orphaned `slurmify-session-*` dirs from
-# prior runs that crashed before atexit could fire (e.g. SIGKILL).
-#
-# Each running Slurmify instance gets its own SESSION_TMP_DIR, so multiple
-# instances don't trample each other's cleanup.
-# ---------------------------------------------------------------------------
-SESSION_TMP_DIR = tempfile.mkdtemp(prefix="slurmify-session-")
-
-def _cleanup_session_tmp() -> None:
-    """Remove this session's temp dir on exit."""
-    shutil.rmtree(SESSION_TMP_DIR, ignore_errors=True)
-
-atexit.register(_cleanup_session_tmp)
-
-def _sweep_orphan_session_dirs() -> None:
-    """Delete leftover slurmify-session-* dirs from prior crashed runs."""
-    pattern = os.path.join(tempfile.gettempdir(), "slurmify-session-*")
-    for old_dir in glob.glob(pattern):
-        if old_dir == SESSION_TMP_DIR:
-            continue
-        # Be defensive: only remove if it actually looks like our session dir
-        # (a directory, name matches our prefix). Fail silently — orphans on
-        # the next boot are not worth crashing the app over.
-        try:
-            if os.path.isdir(old_dir):
-                shutil.rmtree(old_dir, ignore_errors=True)
-        except Exception:
-            pass
-
-_sweep_orphan_session_dirs()
-
-def _new_temp_path(suffix: str, prefix: str = "slurmify_") -> str:
-    """Create a unique temp file inside SESSION_TMP_DIR and return its path.
-
-    The fd is closed immediately — callers that want to write should open
-    the path themselves with their preferred mode (sf.write, ffmpeg, etc.).
-    Files placed here are auto-cleaned when the app exits.
-    """
-    fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix, dir=SESSION_TMP_DIR)
-    os.close(fd)
-    return path
-
-
-def _reveal_temp_dir() -> None:
-    """Open SESSION_TMP_DIR in the host OS file browser.
-
-    macOS  → Finder via `open`
-    Windows → Explorer via `explorer`
-    Linux  → whatever is wired up via `xdg-open`
-    """
-    import subprocess
-    import platform
-    system = platform.system()
-    print(f"[slurm] revealing temp dir: {SESSION_TMP_DIR}")
-    try:
-        if system == "Darwin":
-            subprocess.Popen(["open", SESSION_TMP_DIR])
-        elif system == "Windows":
-            subprocess.Popen(["explorer", SESSION_TMP_DIR])
-        else:
-            subprocess.Popen(["xdg-open", SESSION_TMP_DIR])
-    except Exception as e:
-        # Don't crash the app on a desktop-integration hiccup; surface to UI.
-        # Defer the gr import to call time so this module can be exec'd in
-        # contexts that don't have gradio (e.g. PyInstaller analysis).
-        import gradio as _gr  # noqa: PLC0415
-        raise _gr.Error(f"Couldn't open temp folder: {e}")
+# PYINSTALLER: "slurmio" must stay in hiddenimports in slurmify.spec or
+# the bundled .app will crash on startup with ModuleNotFoundError.
+from slurmio import (
+    _asset,             # resolve bundled asset paths (dev vs. bundle)
+    SESSION_TMP_DIR,    # per-session temp dir (auto-wiped on exit)
+    _new_temp_path,     # create a session-scoped temp file
+    _reveal_temp_dir,   # open SESSION_TMP_DIR in the OS file browser
+    SUPPORTED_EXTS,     # set of accepted audio/video file extensions
+    TARGET_SR,          # 44 100 Hz standard output sample rate
+    load_audio,         # load any audio/video file → (ndarray, sr)
+    _write_audio,       # write audio ndarray → session-scoped temp file
+)
 
 
 import gradio as gr
@@ -141,482 +73,44 @@ import numpy as np
 import pyrubberband as pyrb
 import soundfile as sf
 
-# ---------------------------------------------------------------------------
-# Audio engine
-# ---------------------------------------------------------------------------
+# ── Audio constants and load_audio — now live in slurmio.py ─────────────────
+# SUPPORTED_EXTS, TARGET_SR, and load_audio have been extracted to
+# slurmio.py (Phase 3 of the modularisation — ADR-0017).
+# They are imported above with the rest of the slurmio names.
 
-SUPPORTED_EXTS = {
-    # Audio formats
-    ".mp3", ".wav", ".aif", ".aiff", ".aac", ".m4a", ".flac", ".ogg",
-    ".opus", ".wma", ".ape", ".alac",
-    # Video / media containers — librosa pulls audio out via audioread + ffmpeg.
-    # Listed here so the extension validation in process() lets them through;
-    # actual demuxing happens transparently in load_audio().
-    ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv",
-    ".mpg", ".mpeg", ".3gp", ".3g2", ".ts", ".mts", ".m2ts",
-}
-TARGET_SR = 44_100  # standard CD-quality output
-
-
-def load_audio(path: str) -> tuple[np.ndarray, int]:
-    """Load any common audio format into a mono float32 numpy array at 44.1kHz.
-
-    librosa handles format conversion via audioread/ffmpeg under the hood,
-    so we get mp3/aac/m4a support for free as long as ffmpeg is on PATH.
-    """
-    y, sr = librosa.load(path, sr=TARGET_SR, mono=True)
-    return y.astype(np.float32), sr
-
-
-def detect_slice_points(
-    y: np.ndarray,
-    sr: int,
-    resolution: str,
-    transient_sensitivity: float,
-    bpm_override: float | None = None,
-) -> np.ndarray:
-    """Return sample indices where the audio should be sliced.
-
-    Two strategies are blended:
-      1. Adaptive beat-grid slicing: detect BPM and beat positions, then
-         subdivide or coarsen the actual beat positions rather than using a
-         rigid uniform grid. This follows the track's natural tempo drift
-         instead of drifting away from it. When the user supplies
-         `bpm_override`, that value is passed to librosa as `start_bpm` so
-         the tracker anchors to the correct octave (fixes 90 vs 180 BPM).
-      2. Transient slicing: detect onsets and snap nearby grid points to them.
-
-    `transient_sensitivity` (0.0–1.0) controls how much the onset detector
-    influences slice placement. 0 = pure grid, 1 = pure onset detection.
-
-    `bpm_override` (float or None): user-supplied BPM hint. When provided,
-    it is passed to `librosa.beat.beat_track` as `start_bpm` to guide the
-    tempo estimator toward the correct octave. The detected beat positions
-    are still used for the adaptive grid — only the starting guess changes.
-    """
-    MIN_SAMPLES = 256  # ~6 ms at 44.1 kHz — minimum slice gap
-
-    # MAX RANDOM mode: trimodal distribution — three categorical durations
-    # with NO middle ground. Each slice is randomly drawn as one of:
-    #   • stutter (5-30 ms)   — audio-rate buzzy blip, clusters as glitch bursts
-    #   • chop    (100-500ms) — recognizable rhythmic chunk
-    #   • held    (1000-4000ms) — long passage where audio almost plays through
-    # We deliberately skip the 30-100 ms and 500-1000 ms ranges. Log-uniform
-    # over a continuous span sounded "uniform" because the middle-ground
-    # durations (100-500ms = chop tempo) dominated and the ear blended them
-    # into a constant chop texture. Trimodal forces consecutive slices into
-    # categorically different durations — your brain can't average them into
-    # a single tempo.
-    # Each category is internally log-uniform so within-category variation
-    # is preserved. Seeded by the slurmify seed for reproducibility.
-    # Sample floor 220 (~5 ms at 44.1 kHz) is the lower limit before the
-    # slice envelope crossfade has no room to operate.
-    # Named after Max the tester — and also "max" as in maximum entropy.
-    if resolution == "MAX RANDOM":
-        BUCKETS = [
-            ("stutter", 5.0,    30.0),
-            ("chop",    100.0,  500.0),
-            ("held",    1000.0, 4000.0),
-        ]
-        positions = [0]
-        pos = 0
-        cat_counts = {"stutter": 0, "chop": 0, "held": 0}
-        while pos < len(y):
-            name, lo_ms, hi_ms = random.choice(BUCKETS)
-            dur_ms = 10.0 ** random.uniform(np.log10(lo_ms), np.log10(hi_ms))
-            dur_samples = max(220, int(sr * dur_ms / 1000.0))
-            pos += dur_samples
-            if pos < len(y):
-                positions.append(pos)
-                cat_counts[name] += 1
-        # Debug: confirm at runtime that we hit this branch and the per-bucket
-        # distribution. Should be roughly 1/3 stutter, 1/3 chop, 1/3 held.
-        gaps = np.diff(positions) if len(positions) > 1 else np.array([0])
-        gaps_ms = gaps * 1000.0 / sr
-        n = len(positions)
-        print(f"[slurm] MAX RANDOM trimodal emitted {n} positions · "
-              f"stutter={cat_counts['stutter']} chop={cat_counts['chop']} "
-              f"held={cat_counts['held']} · "
-              f"durations min={gaps_ms.min():.0f}ms max={gaps_ms.max():.0f}ms "
-              f"median={np.median(gaps_ms):.0f}ms")
-        return np.array(positions, dtype=np.int64)
-
-    # ── Tempo and beat detection ──────────────────────────────────────────
-    # Keep beat_frames (not _) so the adaptive grid bends with tempo changes.
-    # trim=False tells librosa not to discard leading/trailing beats, which
-    # matters when the track starts with a pickup or fades out gradually.
-    # bpm_override is passed as start_bpm — a hint, not a lock — so librosa
-    # still refines the estimate from the audio; it just won't jump to a
-    # harmonically-related wrong octave (e.g. 70 instead of 140).
-    try:
-        _kw = {"start_bpm": float(bpm_override)} if bpm_override else {}
-        tempo, beat_frames = librosa.beat.beat_track(
-            y=y, sr=sr, trim=False, **_kw
-        )
-        bpm = float(np.atleast_1d(tempo)[0])
-        if bpm <= 0:
-            bpm = float(bpm_override) if bpm_override else 120.0
-        beat_samples = librosa.frames_to_samples(beat_frames).astype(np.int64)
-    except Exception:
-        beat_samples = np.array([], dtype=np.int64)
-        bpm = float(bpm_override) if bpm_override else 120.0
-
-    print(f"[slurm] BPM={bpm:.1f} beats={len(beat_samples)}"
-          + (f" (override hint: {bpm_override})" if bpm_override else ""))
-
-    # Convert resolution string to subdivisions per beat. Fractional values
-    # (1/1, 1/2) mean fewer slices per beat — i.e. each slice spans multiple beats.
-    res_map = {
-        "1/1":   0.25, "1/2":  0.5,
-        "1/4":   1,    "1/8":  2,
-        "1/16":  4,    "1/32": 8,
-        "1/64":  16,   "1/128": 32,
-    }
-    subdivs = res_map.get(resolution, 4)
-
-    # ── Build adaptive grid from actual beat positions ────────────────────
-    # When beat_samples is available, we subdivide or coarsen each inter-beat
-    # interval individually so the grid follows the track's own tempo curve.
-    # This is qualitatively better than a rigid np.arange grid for music
-    # with gradual tempo drift, rubato, or a slightly unstable click track.
-    #
-    # Fallback: if librosa returned no beat positions, we fall back to a
-    # uniform grid derived from the detected/overridden BPM.
-    if len(beat_samples) >= 2:
-        # Build a list of grid points by walking inter-beat intervals.
-        # For subdivs >= 1: insert (subdivs-1) evenly-spaced points inside
-        #   each beat span.
-        # For subdivs < 1 (1/2 beat, 1/4 beat = whole / half note): collect
-        #   every N-th beat as a grid point.
-        grid_pts: list[int] = []
-
-        if subdivs >= 1:
-            n_sub = int(round(subdivs))
-            for i in range(len(beat_samples) - 1):
-                a, b = int(beat_samples[i]), int(beat_samples[i + 1])
-                for k in range(n_sub):
-                    pt = a + int(k * (b - a) / n_sub)
-                    grid_pts.append(pt)
-            # Include the last beat itself.
-            grid_pts.append(int(beat_samples[-1]))
-        else:
-            # subdivs < 1 → every N-th beat is a slice boundary.
-            step = max(1, int(round(1.0 / subdivs)))
-            grid_pts = [int(beat_samples[i])
-                        for i in range(0, len(beat_samples), step)]
-
-        # Prepend sample 0 if not already there.
-        if not grid_pts or grid_pts[0] > 0:
-            grid_pts.insert(0, 0)
-
-        # Extrapolate past the last detected beat to cover the tail of the
-        # audio. Use the median inter-point spacing of the grid we just built
-        # as the step size so the tail slice size is consistent with the body.
-        if len(grid_pts) >= 2:
-            spacing = int(np.median(np.diff(grid_pts)))
-            spacing = max(spacing, MIN_SAMPLES)
-            pos = grid_pts[-1] + spacing
-            while pos < len(y):
-                grid_pts.append(pos)
-                pos += spacing
-
-        # Enforce MIN_SAMPLES between consecutive points.
-        filtered: list[int] = []
-        for pt in sorted(set(grid_pts)):
-            if not filtered or pt - filtered[-1] >= MIN_SAMPLES:
-                filtered.append(pt)
-        grid_points = np.array(filtered, dtype=np.int64)
-
-        # Use median spacing (computed before filtering) for the transient
-        # snap window — consistent with the adaptive grid density.
-        median_spacing = int(np.median(np.diff(grid_points))) if len(grid_points) >= 2 else MIN_SAMPLES
-    else:
-        # No beat positions detected — fall back to uniform grid.
-        samples_per_slice = max(MIN_SAMPLES, int(sr * 60.0 / bpm / subdivs))
-        grid_points = np.arange(0, len(y), samples_per_slice, dtype=np.int64)
-        median_spacing = samples_per_slice
-
-    if transient_sensitivity <= 0.01:
-        return grid_points
-
-    # Onset detection. Higher sensitivity = lower threshold = more onsets.
-    delta = max(0.01, 0.3 * (1.0 - transient_sensitivity))
-    try:
-        onset_frames = librosa.onset.onset_detect(
-            y=y, sr=sr, delta=delta, backtrack=True
-        )
-        onset_samples = librosa.frames_to_samples(onset_frames)
-    except Exception:
-        onset_samples = np.array([], dtype=np.int64)
-
-    if len(onset_samples) == 0:
-        return grid_points
-
-    if transient_sensitivity >= 0.99:
-        return onset_samples
-
-    # Hybrid: snap each grid point to the nearest onset within a window.
-    # The window uses median_spacing (adaptive grid density) so it scales
-    # correctly whether the resolution is 1/8 or 1/64.
-    window = int(median_spacing * (1.0 - transient_sensitivity))
-    snapped = []
-    for gp in grid_points:
-        candidates = onset_samples[np.abs(onset_samples - gp) <= window]
-        snapped.append(int(candidates[np.argmin(np.abs(candidates - gp))]) if len(candidates) else int(gp))
-    return np.array(sorted(set(snapped)), dtype=np.int64)
+# ── DSP engine — now lives in slurmcore.py ───────────────────────────────────
+# detect_slice_points, apply_envelope, and slurmify have been extracted to
+# slurmcore.py (Phase 2 of the modularisation — ADR-0016).  That module is
+# pure DSP: numpy arrays in, numpy arrays out, no file I/O, no Gradio.
+#
+# apply_fx (the pure DSP portion of burn_fx) is also in slurmcore.py.
+#
+# Import contract:
+#   slurmify(y, sr, ...)     → (np.ndarray, int)   [refactored from str return]
+#   apply_fx(y, sr, ...)     → (np.ndarray, int)   [new — was inside burn_fx]
+#   detect_slice_points(...)  → np.ndarray           [unchanged interface]
+#   apply_envelope(...)       → np.ndarray           [unchanged interface]
+#   _fx_* helpers            — imported for render_video() and any future use
+#
+# PYINSTALLER: "slurmcore" must stay in hiddenimports in slurmify.spec.
+# Local modules are not auto-detected by PyInstaller's static analysis.
+from slurmcore import (
+    detect_slice_points,    # beat-grid + transient-snap slice-point detection
+    apply_envelope,         # per-slice fade-in/out (anti-click envelope)
+    slurmify,               # main DSP pipeline: stretch → slice → FX → concat
+    _fx_distortion,         # tanh waveshaper (DSP only — called by apply_fx)
+    _fx_ring_mod,           # amplitude modulation via carrier oscillator
+    _fx_delay,              # tape delay with feedback loop
+    _fx_phaser,             # 4-stage allpass phaser with LFO
+    apply_fx,               # full FX chain: distortion→ring→delay→phaser
+)
 
 
-def apply_envelope(slice_audio: np.ndarray, sr: int, envelope_ms: float) -> np.ndarray:
-    """Apply a short fade-in/out to a slice to avoid clicks at boundaries.
 
-    envelope_ms = 0 → hard cuts (gritty, classic slurm clicks)
-    envelope_ms > 0 → crossfades (smoother, more musical)
-    """
-    if envelope_ms <= 0 or len(slice_audio) < 4:
-        return slice_audio
-    n_fade = min(int(sr * envelope_ms / 1000.0), len(slice_audio) // 2)
-    if n_fade < 2:
-        return slice_audio
-    fade_in = np.linspace(0.0, 1.0, n_fade, dtype=np.float32)
-    fade_out = np.linspace(1.0, 0.0, n_fade, dtype=np.float32)
-    out = slice_audio.copy()
-    out[:n_fade] *= fade_in
-    out[-n_fade:] *= fade_out
-    return out
-
-
-def slurmify(
-    input_path: str,
-    speed: float,
-    resolution: str,
-    transient_sensitivity: float,
-    envelope_ms: float,
-    preserve_pitch: bool,
-    pitch_shift_semitones: float,
-    randomize_order: bool,
-    reverse_chance: float,
-    stutter_chance: float,
-    stutter_skip_ms: float = 0.0,
-    stutter_max_reps: int = 4,
-    stutter_spread: float = 0.0,
-    bpm_override: float | None = None,
-    start_sec: float = 0.0,
-    end_sec: float = 0.0,
-    output_format: str = "wav",
-    seed: int | None = None,
-    _progress=None,
-) -> str:
-    """Run the full slurm transformation and write to a temp file.
-
-    Returns the path to the rendered output file.
-    _progress: optional callable(fraction, desc=str) for UI progress reporting.
-
-    Stutter engine parameters:
-      stutter_chance   — probability (0-1) each slice is stuttered
-      stutter_skip_ms  — 0 = full-slice tile (classic); >0 = loop only the
-                         first N ms of each slice (skip/stutter-edit mode)
-      stutter_max_reps — upper bound for the random repeat count (2..max_reps)
-      stutter_spread   — 0 = fixed skip length; 1 = skip length randomised
-                         per-event from [skip_ms*(1-spread), skip_ms]
-
-    BPM parameter:
-      bpm_override     — optional float; when set, passed to librosa as
-                         start_bpm to anchor beat tracking to the correct
-                         tempo octave (e.g. 140 instead of 70).
-    """
-    def _prog(val: float, desc: str = "") -> None:
-        if _progress is not None:
-            _progress(val, desc=desc)
-
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-
-    _prog(0.05, "Loading audio…")
-    y, sr = load_audio(input_path)
-
-    # 0. Apply in/out trim (in seconds). end_sec=0 means use full file.
-    start_sample = int(max(0.0, start_sec) * sr)
-    end_sample   = int(end_sec * sr) if end_sec > 0.0 and end_sec > start_sec else len(y)
-    end_sample   = min(end_sample, len(y))
-    if start_sample > 0 or end_sample < len(y):
-        y = y[start_sample:end_sample]
-    if len(y) == 0:
-        raise ValueError("In/out range is empty — check your start and end times.")
-
-    _prog(0.15, "Time-stretching…")
-    # 1. Time-stretch (or speed up with pitch shift if preserve_pitch is False).
-    if preserve_pitch:
-        # pyrubberband preserves pitch while changing tempo. Higher quality.
-        y = pyrb.time_stretch(y, sr, speed)
-    else:
-        # Cheap resample = chipmunk effect (pitch goes up with speed).
-        new_len = max(1, int(len(y) / speed))
-        y = np.interp(
-            np.linspace(0, len(y) - 1, new_len),
-            np.arange(len(y)),
-            y,
-        ).astype(np.float32)
-
-    # 1b. Independent pitch shift (semitones, ±24 = ±2 octaves).
-    #     Applied after speed change so the two controls are fully independent.
-    #     Skipped when zero to avoid an unnecessary rubberband pass.
-    if pitch_shift_semitones != 0.0:
-        _prog(0.28, "Shifting pitch…")
-        y = pyrb.pitch_shift(y, sr, pitch_shift_semitones)
-
-    _prog(0.40, "Finding slice points…")
-    # 2. Find slice points on the (now sped-up) audio.
-    slice_points = detect_slice_points(y, sr, resolution, transient_sensitivity,
-                                       bpm_override=bpm_override)
-    if len(slice_points) < 2:
-        # Audio too short or detection failed — return as-is.
-        _prog(0.95, "Encoding…")
-        out_path = _write_audio(y, sr, output_format)
-        _prog(1.0, "Done")
-        return out_path
-
-    _prog(0.50, "Slicing…")
-    # 3. Cut into slices.
-    slices = []
-    for i in range(len(slice_points) - 1):
-        start, end = int(slice_points[i]), int(slice_points[i + 1])
-        if end > start:
-            slices.append(y[start:end])
-    # Tail
-    if slice_points[-1] < len(y):
-        slices.append(y[int(slice_points[-1]):])
-
-    _prog(0.60, "Processing slices…")
-    # 4. Per-slice transformations.
-    processed: list[np.ndarray] = []
-    n_slices = len(slices)
-    for idx, s in enumerate(slices):
-        if len(s) < 4:
-            continue
-
-        # Envelope (anti-click or crossfade).
-        s = apply_envelope(s, sr, envelope_ms)
-
-        # Random reverse
-        if reverse_chance > 0 and random.random() < reverse_chance:
-            s = s[::-1].copy()
-
-        # Stutter / repeat
-        # Two modes controlled by stutter_skip_ms:
-        #   skip_ms == 0  →  Classic: tile the full slice (original behavior).
-        #   skip_ms  > 0  →  Skip: loop only the head of the slice (stutter-edit
-        #                    style). stutter_spread varies the head length
-        #                    per-event for an organic, varied texture.
-        if stutter_chance > 0 and random.random() < stutter_chance:
-            actual_reps = random.randint(2, max(2, int(stutter_max_reps)))
-            if stutter_skip_ms > 0:
-                # Determine effective head length for this stutter event.
-                if stutter_spread > 0:
-                    lo_ms = max(5.0, stutter_skip_ms * (1.0 - float(stutter_spread)))
-                    eff_ms = random.uniform(lo_ms, stutter_skip_ms)
-                else:
-                    eff_ms = float(stutter_skip_ms)
-                head_n = max(int(sr * 0.005), int(sr * eff_ms / 1000.0))
-                head_n = min(head_n, len(s))
-                # Apply envelope to the head independently so each repeat
-                # starts and ends cleanly rather than clicking mid-tile.
-                head = apply_envelope(s[:head_n], sr, envelope_ms)
-                s = np.tile(head, actual_reps)
-            else:
-                # Classic: tile the full slice.
-                s = np.tile(s, actual_reps)
-
-        processed.append(s)
-        # Report slice progress between 0.60 and 0.80
-        _prog(0.60 + 0.20 * (idx + 1) / max(n_slices, 1), "Processing slices…")
-
-    _prog(0.82, "Mixing…")
-    # 5. Optional global shuffle — controlled by the "randomize slice order"
-    # checkbox uniformly across all modes. (When MAX RANDOM is selected in
-    # the UI, a .change() handler auto-checks this box; user can uncheck it
-    # to get random durations in original order.)
-    if randomize_order:
-        random.shuffle(processed)
-
-    # 6. Concatenate and normalize.
-    if not processed:
-        out = y
-    else:
-        out = np.concatenate(processed)
-
-    # Soft normalize to -1 dBFS to avoid clipping after stutter pile-up.
-    peak = float(np.max(np.abs(out))) if len(out) else 0.0
-    if peak > 0:
-        out = (out / peak * 0.891).astype(np.float32)  # -1 dBFS
-
-    _prog(0.92, "Encoding…")
-    result = _write_audio(out, sr, output_format)
-    _prog(1.0, "Done ✓")
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Output format helpers
-# ---------------------------------------------------------------------------
-
-# Formats soundfile can encode directly (no ffmpeg needed)
-_SF_FORMATS = {
-    "wav":  {"suffix": ".wav",  "subtype": "PCM_16"},
-    "flac": {"suffix": ".flac", "subtype": "PCM_16"},
-    "ogg":  {"suffix": ".ogg",  "subtype": "VORBIS"},
-    "aiff": {"suffix": ".aiff", "subtype": "PCM_16"},
-}
-
-# Formats that require ffmpeg encoding (write wav first, then transcode)
-_FFMPEG_FORMATS = {
-    "mp3":  {"suffix": ".mp3",  "codec": "libmp3lame",  "quality": ["-q:a", "2"]},
-    "aac":  {"suffix": ".m4a",  "codec": "aac",         "quality": ["-b:a", "192k"]},
-}
-
-
-def _write_audio(y: np.ndarray, sr: int, fmt: str) -> str:
-    """Write audio array to a temp file in the requested format.
-
-    Supports WAV/FLAC/OGG/AIFF via soundfile and MP3/AAC via bundled ffmpeg.
-    Falls back to WAV if the format is unrecognised.
-    """
-    fmt = fmt.lower()
-
-    if fmt in _SF_FORMATS:
-        cfg = _SF_FORMATS[fmt]
-        path = _new_temp_path(suffix=cfg["suffix"])
-        sf.write(path, y, sr, subtype=cfg["subtype"])
-        return path
-
-    if fmt in _FFMPEG_FORMATS:
-        cfg = _FFMPEG_FORMATS[fmt]
-        # Step 1: write a temp WAV (lossless intermediate)
-        wav_path = _new_temp_path(suffix=".wav", prefix="slurmify_tmp_")
-        sf.write(wav_path, y, sr, subtype="PCM_16")
-
-        # Step 2: locate ffmpeg (should be on PATH from bootstrap)
-        import subprocess
-        ffmpeg_exe = shutil.which("ffmpeg") or os.environ.get("FFMPEG_BINARY", "ffmpeg")
-
-        out_path = _new_temp_path(suffix=cfg["suffix"])
-        try:
-            subprocess.run(
-                [ffmpeg_exe, "-y", "-i", wav_path,
-                 "-c:a", cfg["codec"], *cfg["quality"],
-                 out_path],
-                check=True,
-                capture_output=True,
-            )
-        finally:
-            try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
-        return out_path
-
-    # Unknown format — fall back to WAV
-    return _write_audio(y, sr, "wav")
+# ── Output format helpers — now live in slurmio.py ──────────────────────────
+# _SF_FORMATS, _FFMPEG_FORMATS, and _write_audio have been extracted to
+# slurmio.py (Phase 3 of the modularisation — ADR-0017).
+# They are imported above with the rest of the slurmio names.
 
 
 # ---------------------------------------------------------------------------
@@ -652,76 +146,15 @@ from ui_assets import (
 
 
 
-# ── Audio Effects DSP (numpy/scipy — no extra deps) ─────────────────────────
-# These match the Web Audio API chain so "burn FX" sounds like the preview.
-
-def _fx_distortion(y: np.ndarray, drive: float) -> np.ndarray:
-    """Tanh soft-clip waveshaper. drive 0-1 → pre-gain 1x-30x."""
-    if drive < 0.01:
-        return y
-    k = float(1.0 + drive * 29.0)
-    return (np.tanh(y * k) / np.tanh(k)).astype(np.float32)
 
 
-def _fx_ring_mod(y: np.ndarray, sr: int, freq: float, depth: float) -> np.ndarray:
-    """Amplitude modulation via carrier oscillator. depth 0-1."""
-    if depth < 0.01:
-        return y
-    mono = y.ndim == 1
-    if mono:
-        y = y[np.newaxis, :]
-    t = np.arange(y.shape[1], dtype=np.float32) / sr
-    # gain = 1 + depth * sin(...) — matches Web Audio: gain.value=1, osc→gain
-    mod = 1.0 + depth * np.sin(2 * np.pi * freq * t, dtype=np.float32)
-    out = (y * mod[np.newaxis, :]).astype(np.float32)
-    return out[0] if mono else out
+# ── Audio Effects DSP — now lives in slurmcore.py ───────────────────────────
+# _fx_distortion, _fx_ring_mod, _fx_delay, _fx_phaser, and apply_fx are all
+# defined in slurmcore.py (Phase 2 of the modularisation — ADR-0016).
+# They are imported below with the rest of the slurmcore names.
+# burn_fx() (just below) is the thin Gradio wrapper that loads/writes files
+# and delegates the pure DSP work to apply_fx().
 
-
-def _fx_delay(y: np.ndarray, sr: int, delay_sec: float,
-              feedback: float, mix: float) -> np.ndarray:
-    """Tape delay with feedback loop. delay_sec 0-1s, feedback 0-0.9, mix 0-1."""
-    if mix < 0.01 or delay_sec < 0.001:
-        return y
-    mono = y.ndim == 1
-    if mono:
-        y = y[np.newaxis, :]
-    n_ch, n = y.shape
-    d = max(1, int(delay_sec * sr))
-    buf = np.zeros((n_ch, d), dtype=np.float32)
-    wet = np.zeros_like(y)
-    wi = 0
-    for i in range(n):
-        tap = buf[:, wi].copy()
-        wet[:, i] = tap
-        buf[:, wi] = y[:, i] + tap * feedback
-        wi = (wi + 1) % d
-    out = (y * (1 - mix) + wet * mix).astype(np.float32)
-    return out[0] if mono else out
-
-
-def _fx_phaser(y: np.ndarray, sr: int, rate: float, depth: float) -> np.ndarray:
-    """4-stage allpass phaser with LFO. rate Hz, depth 0-1."""
-    if depth < 0.01:
-        return y
-    from scipy.signal import lfilter
-    mono = y.ndim == 1
-    if mono:
-        y = y[np.newaxis, :]
-    n_ch, n = y.shape
-    t = np.arange(n, dtype=np.float64) / sr
-    lfo = np.sin(2 * np.pi * rate * t)          # -1..1
-    # 4 allpass stages; LFO sweeps center freq ±(depth*50%) around each
-    centers = [200.0, 600.0, 1200.0, 2400.0]
-    phased = y.astype(np.float64).copy()
-    for fc in centers:
-        fc_mean = float(np.clip(fc * (1.0 + 0.5 * depth * lfo.mean()),
-                                20, sr / 2 - 1))
-        tw = np.tan(np.pi * fc_mean / sr)
-        a = (tw - 1.0) / (tw + 1.0)
-        for ch in range(n_ch):
-            phased[ch] = lfilter([a, 1.0], [1.0, a], phased[ch])
-    out = (y * (1 - depth * 0.5) + phased * (depth * 0.5)).astype(np.float32)
-    return out[0] if mono else out
 
 
 def burn_fx(
@@ -731,25 +164,66 @@ def burn_fx(
     phase_rate, phase_depth,
     out_fmt,
 ):
-    """Bake current FX settings into the output audio and return a new file."""
+    """Gradio event handler: load audio from disk, apply FX chain, write output.
+
+    This is the thin "glue" wrapper that bridges Gradio and the pure DSP layer
+    in slurmcore.py.  The separation keeps slurmcore completely free of I/O
+    and Gradio dependencies.
+
+    Flow:
+      1. Validate the input path (raise gr.Error if missing — Gradio surfaces
+         this as a friendly red banner rather than a raw Python traceback).
+      2. Load the audio with librosa, preserving the original sample rate and
+         channel layout (sr=None → keep native SR; mono=False → keep stereo).
+      3. Ensure the array is 2-D (channels × samples) — the _fx_* functions in
+         slurmcore.py expect that shape and handle mono/stereo themselves.
+      4. Call apply_fx() from slurmcore — pure DSP, no I/O.
+      5. Squeeze back to 1-D if the input was originally mono, so soundfile
+         writes a proper mono file rather than a 1-channel stereo file.
+      6. Write the result to a new temp file via _write_audio().
+
+    Parameters match the Gradio slider names exactly (burn_btn.click wiring).
+    """
+    # 1. Guard: nothing to apply FX to yet.
     if not audio_path or not os.path.exists(str(audio_path)):
         raise gr.Error("Run slurmify first — no output to apply FX to.")
+
+    # 2. Load — preserve native sample rate and channel count.
+    #    librosa returns mono 1-D or stereo 2-D depending on the file.
     y, sr = librosa.load(audio_path, sr=None, mono=False)
-    if y.ndim == 1:
+
+    # 3. Promote to 2-D so apply_fx can handle mono and stereo uniformly.
+    #    The _fx_* functions return 2-D; we'll squeeze back at step 5.
+    was_mono = y.ndim == 1
+    if was_mono:
         y = y[np.newaxis, :]
     y = y.astype(np.float32)
 
-    y = _fx_distortion(y, float(dist_drive or 0))
-    y = _fx_ring_mod(y, sr, float(ring_freq or 200), float(ring_depth or 0))
-    y = _fx_delay(y, sr, float(delay_sec or 0.3),
-                  float(delay_fb or 0.35), float(delay_mix or 0))
-    y = _fx_phaser(y, sr, float(phase_rate or 1.0), float(phase_depth or 0))
+    # 4. Pure DSP — no I/O, no gr.Error inside here.
+    y, sr = apply_fx(
+        y, sr,
+        dist_drive  = float(dist_drive  or 0),
+        ring_freq   = float(ring_freq   or 200),
+        ring_depth  = float(ring_depth  or 0),
+        delay_sec   = float(delay_sec   or 0.3),
+        delay_fb    = float(delay_fb    or 0.35),
+        delay_mix   = float(delay_mix   or 0),
+        phase_rate  = float(phase_rate  or 1.0),
+        phase_depth = float(phase_depth or 0),
+    )
 
-    peak = float(np.max(np.abs(y)))
-    if peak > 1.0:
-        y = y / peak * 0.95
-    y = np.clip(y, -1.0, 1.0)
-    export = y[0] if y.shape[0] == 1 else y
+    # 5. Squeeze back to 1-D for mono, leave stereo as-is.
+    #    soundfile expects (n,) for mono or (n, channels) for stereo.
+    if was_mono:
+        export = y[0]
+    elif y.shape[0] == 1:
+        # apply_fx may return shape (1, n) even when input was already 2-D
+        # if all _fx_* stages treated it as mono.  Squeeze for consistency.
+        export = y[0]
+    else:
+        export = y
+
+    # 6. Write to a new session-scoped temp file.
     return _write_audio(export, sr, (out_fmt or "wav").lower())
 
 
@@ -1072,8 +546,13 @@ def process(
             except (ValueError, TypeError):
                 bpm_ov = None
 
-        return slurmify(
-            input_path=audio_file,
+        # Load the audio into a numpy array.  slurmcore.slurmify is now a
+        # pure DSP function that takes arrays in and arrays out — it never
+        # touches the filesystem.  IO (load + write) happens here in app.py.
+        y, sr = load_audio(audio_file)
+        y_out, sr_out = slurmify(
+            y=y,
+            sr=sr,
             speed=speed,
             resolution=resolution,
             transient_sensitivity=transient_sensitivity,
@@ -1089,10 +568,10 @@ def process(
             bpm_override=bpm_ov,
             start_sec=float(start_sec or 0),
             end_sec=float(end_sec or 0),
-            output_format=output_format,
             seed=seed,
             _progress=progress,
         )
+        return _write_audio(y_out, sr_out, output_format)
     except ValueError as e:
         raise gr.Error(str(e))
 

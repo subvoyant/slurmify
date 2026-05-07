@@ -118,6 +118,8 @@ hidden = [
     # Each local module extracted from app.py must be listed here explicitly
     # or the bundled .app will crash on startup with ModuleNotFoundError.
     "ui_assets",    # static browser content: INIT_JS, CUSTOM_CSS, base64 assets
+    "slurmcore",    # pure DSP engine: detect_slice_points, slurmify, apply_fx, _fx_*
+    "slurmio",      # filesystem IO: _asset, load_audio, _write_audio, session-temp
     "pydantic",
     "pydantic.deprecated",
     "pydantic.deprecated.class_validators",

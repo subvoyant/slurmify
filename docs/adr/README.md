@@ -41,6 +41,8 @@ folder corresponds to an item in the digest's "danger zones" list.
 | [0013](0013-auto-shuffle-max-random.md)       | Selecting MAX RANDOM auto-checks the shuffle box            | Accepted |
 | [0014](0014-gradio-quirks-collected.md)       | Collected Gradio behavior quirks (living catalog)           | Accepted |
 | [0015](0015-modular-file-structure.md)        | Modular file structure — extract `ui_assets.py` (Phase 1)  | Accepted |
+| [0016](0016-slurmcore-dsp-extraction.md)      | Extract pure DSP into `slurmcore.py` (Phase 2)              | Accepted |
+| [0017](0017-slurmio-filesystem-extraction.md) | Extract filesystem IO into `slurmio.py` (Phase 3)           | Accepted |
 
 ## Numbering
 

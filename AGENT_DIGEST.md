@@ -29,10 +29,14 @@ copy is `build.sh`'s `VERSION="0.1.3"`).
 ## File map
 
 ```
-app.py                            ← bootstrap, audio DSP, FX, Gradio UI, __main__
-                                     (~1 840 lines after Phase-1 modularisation — ADR-0015)
+app.py                            ← bootstrap, burn_fx wrapper, Gradio UI, __main__
+                                     (~1 320 lines after Phase-3 modularisation — ADR-0017)
 ui_assets.py                      ← static browser content: INIT_JS, CUSTOM_CSS,
                                      base64 GIF Easter eggs, icon (ADR-0015)
+slurmcore.py                      ← pure audio DSP: detect_slice_points, apply_envelope,
+                                     slurmify, _fx_*, apply_fx (ADR-0016)
+slurmio.py                        ← filesystem IO: _asset, load_audio, _write_audio,
+                                     session-temp machinery (ADR-0017)
 slurmify.spec                     ← PyInstaller spec
 build.sh                          ← codesign + notarize + DMG
 entitlements.plist                ← macOS hardened-runtime entitlements
@@ -54,20 +58,20 @@ SLURMER_BETATEST_INSTRUCTIONS.md  ← release notes for testers
 SLURMCORE_COMPARISON.md           ← long-form: how Slurmify differs from general slurmcore (also bundled in DMG)
 LICENSE                           ← GPL-3.0 + third-party notices (also bundled in DMG)
 AGENT_DIGEST.md                   ← THIS FILE
-docs/adr/                         ← architecture decision records (0001-0015)
+docs/adr/                         ← architecture decision records (0001-0017)
 graphic/
     max.gif                       ← Max-the-tester face (hover gif on MAX RANDOM radio)
     hobermanmax.gif               ← Hoberman-Max (hover gif on 🎲 randomize all button)
     RGBOB.gif                     ← Bob (hover gif on 📁 reveal temp files button)
 ```
 
-### Planned future modules (not yet extracted — see ADR-0015)
+### Planned future modules (Phase 4 not yet extracted — see ADR-0015, ADR-0016, ADR-0017)
 
 ```
-slurmcore.py  (Phase 2) — pure audio DSP: detect_slice_points, slurmify,
-                           apply_envelope, burn_fx, FX helper functions
-slurmio.py    (Phase 3) — filesystem IO: load_audio, _write_audio,
-                           temp-file management, _asset path resolution
+slurmcore.py  (Phase 2 — DONE) — pure audio DSP: detect_slice_points,
+                                   slurmify, apply_envelope, _fx_*, apply_fx
+slurmio.py    (Phase 3 — DONE) — filesystem IO: load_audio, _write_audio,
+                                   temp-file management, _asset path resolution
 slurm_ui.py   (Phase 4) — Gradio orchestration: build_ui, process,
                            render_video, _quit_app
 ```
@@ -78,13 +82,21 @@ slurm_ui.py   (Phase 4) — Gradio orchestration: build_ui, process,
 
 | Marker (unique substring) | File | What lives there |
 |---|---|---|
-| `# PyInstaller bundle bootstrap` | app.py | sys.frozen detection, ffmpeg/numba env setup, `_asset()` |
-| `# Session-scoped temp directory` | app.py | `SESSION_TMP_DIR`, `_new_temp_path`, `_reveal_temp_dir`, atexit + orphan sweep (ADR-0011) |
-| `# Audio engine` | app.py | `load_audio`, `detect_slice_points` (incl. MAX RANDOM trimodal — ADR-0012), `apply_envelope` |
-| `def slurmify(` | app.py | the main DSP pipeline (load → trim → stretch → slice → fx → write); stutter engine v0.1.2; adaptive beat-grid + bpm_override v0.1.3 |
-| `# Output format helpers` | app.py | `_SF_FORMATS`, `_FFMPEG_FORMATS`, `_write_audio` |
+| `# PyInstaller bundle bootstrap` | app.py | sys.frozen detection, ffmpeg/numba env setup |
+| `# Filesystem IO layer — now lives in slurmio.py` | app.py | from slurmio import block; pointer to ADR-0017 |
+| `# Asset path resolution` | **slurmio.py** | `_asset()` — dev vs. bundle path resolver |
+| `# Session-scoped temporary directory` | **slurmio.py** | `SESSION_TMP_DIR`, `_new_temp_path`, `_reveal_temp_dir`, atexit + orphan sweep (ADR-0011) |
+| `# Audio input` | **slurmio.py** | `SUPPORTED_EXTS`, `TARGET_SR`, `load_audio` |
+| `# Audio output` | **slurmio.py** | `_SF_FORMATS`, `_FFMPEG_FORMATS`, `_write_audio` |
+| `# DSP engine — now lives in slurmcore.py` | app.py | import block for slurmcore; brief explanation of IO boundary (ADR-0016) |
+| `def detect_slice_points(` | **slurmcore.py** | beat-grid + transient-snap slice-point engine (MAX RANDOM trimodal — ADR-0012) |
+| `def apply_envelope(` | **slurmcore.py** | per-slice fade-in/out (anti-click) |
+| `def slurmify(` | **slurmcore.py** | main DSP pipeline (trim → stretch → slice → per-slice FX → concat → normalize); takes `(y, sr)` → returns `(ndarray, int)` — ADR-0016 |
+| `# FX DSP helpers` | slurmcore.py | `_fx_distortion`, `_fx_ring_mod`, `_fx_delay`, `_fx_phaser` — pure numpy (no IO, no Gradio) |
+| `def apply_fx(` | **slurmcore.py** | full FX chain (dist→ring→delay→phaser) — pure DSP, called by `burn_fx` in app.py |
 | `# Gradio UI` | app.py | header that introduces the UI half of the file |
 | `from ui_assets import` | app.py | import of all static browser content — edit the assets in ui_assets.py, not here |
+| `from slurmcore import` | app.py | import of all DSP functions — edit DSP in slurmcore.py, not here |
 | `INIT_JS = """` | **ui_assets.py** | the multi-line browser-side JS string (~500 lines) |
 | `// ── Skin switcher ──` | ui_assets.py | URL-param + localStorage skin selection (ADR-0007) |
 | `// ── Web Audio FX chain ──` | ui_assets.py | FX state, `_fxWalk`, `_fxCurve`, `_fxApply`, `_fxSetup` |
@@ -96,8 +108,7 @@ slurm_ui.py   (Phase 4) — Gradio orchestration: build_ui, process,
 | `_BOB_GIF_B64 = "` | ui_assets.py | base64 Bob hover gif + CSS (bottom-up spring). Must precede its CSS += f-string. |
 | `_HOBERMAN_GIF_B64 = "` | ui_assets.py | base64 Hoberman-Max hover gif + CSS (bottom-up spring). Must precede its CSS += f-string. |
 | `# ── Compact form controls` | ui_assets.py | radio chip rules, `.slurm-dropdown` (ADR-0014 §4), `.slurm-audio` |
-| `# ── Audio Effects DSP` | app.py | `_fx_distortion`, `_fx_ring_mod`, `_fx_delay`, `_fx_phaser` |
-| `def burn_fx(` | app.py | bake current FX into a new audio file (Python parity for live JS chain) |
+| `def burn_fx(` | app.py | thin Gradio wrapper: validates path, loads audio, calls `apply_fx()` (slurmcore), writes output |
 | `# ── Video export (YouTube-ready MP4) ──` | app.py | `render_video` and friends; ADR-0006 lives here |
 | `def _jumble_name(` | app.py | filename-shuffle helper for the MP4 export |
 | `def _leetify(` | app.py | leet-substitution helper used by `_jumble_name` |
@@ -108,7 +119,7 @@ slurm_ui.py   (Phase 4) — Gradio orchestration: build_ui, process,
 | `def _route_upload(` | app.py | universal upload router — audio passes through, video → ffmpeg extract (ADR-0009) |
 | `def _on_resolution_change(` | app.py | auto-checks shuffle box on MAX RANDOM (ADR-0013) |
 | `def _randomize_all(` | app.py | 🎲 randomize all button — random slurm params (musical bias) |
-| `def _reveal_temp_dir(` | app.py | 📁 reveal temp files — opens SESSION_TMP_DIR in OS file browser |
+| `def _reveal_temp_dir(` | **slurmio.py** | 📁 reveal temp files — opens SESSION_TMP_DIR in OS file browser |
 | `if __name__ == "__main__":` | app.py | `_fonts`, `_favicon_js` (ADR-0010), `_head`, `ui.launch(...)` |
 
 ---
@@ -125,19 +136,24 @@ _ICON_B64, _ICON_TAG     # base64'd Siena cat icon (header + favicon ADR-0010)
 _MAX_GIF_B64             # base64 Max gif (MAX RANDOM hover, right-slide)
 _BOB_GIF_B64             # base64 Bob gif (reveal-temp-files hover, bottom-up spring)
 _HOBERMAN_GIF_B64        # base64 Hoberman-Max gif (randomize-all hover, bottom-up spring)
-_LEET_PAIRS              # leet substitution table for _jumble_name
+_LEET_PAIRS              # leet substitution table for _jumble_name (app.py)
+# ── now in slurmio.py (ADR-0017) ──
 _SF_FORMATS              # output formats handled by libsndfile
 _FFMPEG_FORMATS          # output formats handled by ffmpeg branch
 TARGET_SR = 44_100       # internal sample rate (don't change without hunting)
 SUPPORTED_EXTS           # input file extension whitelist (audio + video containers)
 SESSION_TMP_DIR          # per-process temp dir (ADR-0011) — auto-cleaned at exit
+# ── back in app.py ──
 _AUDIO_EXTS              # set used by _route_upload to decide pass-through vs ffmpeg-extract
 ```
 
-### Module-level helpers added in v0.1.0 / v0.1.1
+### Module-level helpers — now in `slurmio.py` (ADR-0017)
 
 ```
+_asset(relative_path)           # resolve bundled asset path (dev vs. .app bundle)
 _new_temp_path(suffix, prefix)  # the ONLY way to create temp files (ADR-0011)
+load_audio(path)                # load any audio/video → (mono float32 ndarray, sr)
+_write_audio(y, sr, fmt)        # write ndarray → session-scoped temp file
 _cleanup_session_tmp()          # atexit handler
 _sweep_orphan_session_dirs()    # startup orphan cleanup (crashed prior sessions)
 _reveal_temp_dir()              # opens SESSION_TMP_DIR in Finder/Explorer/xdg-open
@@ -204,21 +220,24 @@ _SKIN_NAMES              # whitelist: ['default', 'acid', 'hardware']
 1. Add a `gr.Slider` / `gr.Checkbox` in `build_ui()` in the input column.
 2. Add it to the `inputs=[...]` of the `go_btn.click(...).then(fn=process,...)` chain.
 3. Add a parameter to `process()` and pass it through to `slurmify()`.
-4. Implement the DSP step inside `slurmify()` at the right pipeline stage.
+4. **Implement the DSP step inside `slurmify()` in `slurmcore.py`** (not app.py)
+   at the right pipeline stage.
 5. Update `_progress(...)` fractions if the new step is heavy (`slurmify()` reports
-   load 0.05 → stretch 0.15 → pitch 0.28 → slice points 0.40 → slicing 0.50 →
-   per-slice 0.60-0.80 → mix 0.82 → encode 0.92 → done 1.0).
+   trim/load 0.0 → stretch 0.15 → pitch 0.28 → slice points 0.40 → slicing 0.50 →
+   per-slice 0.60-0.80 → mix 0.82 → done 1.0).
 6. **If the parameter affects the slurm output and you want it preserved in
    the exported MP4**, add it to the `patch` dict in `render_video()`.
 
 ### A new FX
 
-1. **JS preview chain (`_fxSetup`)** — create AudioNodes, connect into the
-   chain in the right place, add state to `_fxP`. Update `_fxApply()` to push
-   state into nodes. Expose setters on `window.slurmFx`.
-2. **Python burn parity (`burn_fx`)** — implement `_fx_<name>(y, sr, ...)`
-   that produces the same output as the JS graph. Call it from `burn_fx` in
-   the same chain order.
+1. **JS preview chain (`_fxSetup` in `ui_assets.py`)** — create AudioNodes,
+   connect into the chain in the right place, add state to `_fxP`.
+   Update `_fxApply()` to push state into nodes. Expose setters on `window.slurmFx`.
+2. **Python burn parity (`slurmcore.py`)** — implement `_fx_<name>(y, sr, ...)`
+   that produces the same output as the JS graph. Add it to `apply_fx()` in
+   `slurmcore.py` in the same chain order as the JS graph.
+   The `burn_fx()` wrapper in `app.py` passes parameters through to `apply_fx()`
+   — add the new parameter to both `apply_fx()` in slurmcore AND `burn_fx()` in app.py.
 3. **UI** — sliders in the FX accordion. Mirror them to `window.slurmFx.set*`
    via `slider.change(fn=None, js=...)` (use the existing `_js = lambda fn: ...`
    helper).
@@ -236,8 +255,8 @@ stable `elem_id`.
 ### A new output format
 
 Add an entry to `_SF_FORMATS` (soundfile-direct) or `_FFMPEG_FORMATS` (needs
-the ffmpeg encode branch). Add it to the `output_format` `gr.Dropdown` in the
-UI. No other changes — `_write_audio` dispatches by name.
+the ffmpeg encode branch) **in `slurmio.py`**. Add it to the `output_format`
+`gr.Dropdown` in `app.py`. No other changes — `_write_audio` dispatches by name.
 
 ### A new skin
 
@@ -318,6 +337,12 @@ UI. No other changes — `_write_audio` dispatches by name.
 | Gradio quirks catalog | [0014](docs/adr/0014-gradio-quirks-collected.md) | First place to look when a Gradio component does something weird. Living document. |
 | ui_assets.py GIF/CSS ordering | [0015](docs/adr/0015-modular-file-structure.md) | GIF b64 vars and CSS += blocks are interleaved on purpose — each GIF must be defined before the CSS f-string that embeds it. Do not reorder. |
 | hiddenimports in slurmify.spec | [0015](docs/adr/0015-modular-file-structure.md) | Every new local module (ui_assets, slurmcore, …) MUST appear in hiddenimports or the .app crashes at startup. |
+| slurmcore.py purity rule | [0016](docs/adr/0016-slurmcore-dsp-extraction.md) | slurmcore.py must NEVER import os/sys/soundfile/gradio/shutil/subprocess. All I/O stays in app.py. |
+| slurmify() IO refactor | [0016](docs/adr/0016-slurmcore-dsp-extraction.md) | slurmify() now takes `(y, sr, ...)` and returns `(ndarray, int)`. It does NOT load or write files. process() wraps it with load_audio + _write_audio. |
+| apply_fx() / burn_fx() split | [0016](docs/adr/0016-slurmcore-dsp-extraction.md) | apply_fx (slurmcore) = pure DSP. burn_fx (app.py) = thin wrapper: validate path → load → apply_fx → write. |
+| dual FX channel (JS + Python) | [0015](docs/adr/0015-modular-file-structure.md), [0016](docs/adr/0016-slurmcore-dsp-extraction.md) | Every FX exists in both slurmcore.py AND INIT_JS (ui_assets.py). Adding/changing any FX parameter requires edits in BOTH places. |
+| slurmio.py purity rule | [0017](docs/adr/0017-slurmio-filesystem-extraction.md) | slurmio.py must NEVER import gradio at the top level. One lazy `import gradio as _gr` inside `_reveal_temp_dir`'s except handler is the only allowed exception. |
+| slurmio.py session-temp side effects | [0017](docs/adr/0017-slurmio-filesystem-extraction.md) | Importing slurmio runs `tempfile.mkdtemp()` and `atexit.register()` once. Test code that imports slurmio will create a temp dir — this is intentional and matches prior app.py behaviour. |
 
 ---
 
@@ -330,9 +355,11 @@ python app.py
 # → http://127.0.0.1:7860
 # Try skins via:  ?skin=acid  |  ?skin=hardware  |  ?skin=default
 
-# Syntax check after edits (check BOTH files — ui_assets.py is now separate)
+# Syntax check after edits (check ALL FOUR files — ADR-0015, ADR-0016, ADR-0017)
 python3 -c "import ast; ast.parse(open('app.py').read()); print('app.py OK')"
 python3 -c "import ast; ast.parse(open('ui_assets.py').read()); print('ui_assets.py OK')"
+python3 -c "import ast; ast.parse(open('slurmcore.py').read()); print('slurmcore.py OK')"
+python3 -c "import ast; ast.parse(open('slurmio.py').read()); print('slurmio.py OK')"
 
 # Quick CSS brace check (CUSTOM_CSS lives in ui_assets.py now — ADR-0015)
 python3 -c "
@@ -386,4 +413,4 @@ the codebase has drifted from a state that was previously well-mapped.
 
 ---
 
-*Last updated: 2026-05-06 · v0.1.3*
+*Last updated: 2026-05-06 · v0.1.3 · Phase-2 modularisation (slurmcore.py — ADR-0016)*
