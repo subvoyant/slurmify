@@ -120,6 +120,7 @@ hidden = [
     "ui_assets",    # static browser content: INIT_JS, CUSTOM_CSS, base64 assets
     "slurmcore",    # pure DSP engine: detect_slice_points, slurmify, apply_fx, _fx_*
     "slurmio",      # filesystem IO: _asset, load_audio, _write_audio, session-temp
+    "slurm_ui",     # Gradio UI orchestration: build_ui, process, burn_fx, render_video
     "pydantic",
     "pydantic.deprecated",
     "pydantic.deprecated.class_validators",
