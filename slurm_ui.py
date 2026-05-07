@@ -635,7 +635,7 @@ def process(
             reverse_chance=reverse_chance,
             stutter_chance=stutter_chance,
             stutter_skip_ms=float(stutter_skip_ms or 0),
-            stutter_max_reps=int(stutter_max_reps or 4),
+            stutter_max_reps=int(stutter_max_reps if stutter_max_reps is not None else 0),
             stutter_spread=float(stutter_spread or 0),
             bpm_override=bpm_ov,
             start_sec=float(start_sec or 0),
@@ -873,7 +873,7 @@ def build_ui() -> gr.Blocks:
                 )
                 stutter_chance = gr.Slider(
                     label="stutter chance per slice",
-                    minimum=0.0, maximum=1.0, step=0.05, value=0.15,
+                    minimum=0.0, maximum=1.0, step=0.05, value=0.0,
                     info="probability each slice is stuttered",
                 )
                 stutter_skip_ms = gr.Slider(
@@ -883,8 +883,8 @@ def build_ui() -> gr.Blocks:
                 )
                 stutter_max_reps = gr.Slider(
                     label="reps (max)",
-                    minimum=2, maximum=16, step=1, value=4,
-                    info="upper bound for repeat count — draw is random 2 → max",
+                    minimum=0, maximum=16, step=1, value=0,
+                    info="upper bound for repeat count — draw is random 2 → max · 0 = stutter off",
                 )
                 stutter_spread = gr.Slider(
                     label="spread",

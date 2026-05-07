@@ -84,9 +84,10 @@ from slurmio import _new_temp_path
 # _ICON_B64 is used here in __main__ to write the favicon and build <link> tags.
 # PYINSTALLER: "ui_assets" must stay in hiddenimports in slurmify.spec.
 from ui_assets import (
-    INIT_JS,    # ~500 lines of browser JS (Web Audio chain, FX sync, hover gifs)
-    CUSTOM_CSS, # ~1 200 lines of Gradio CSS (dark theme, Easter egg animations)
-    _ICON_B64,  # base64 PNG: Subvoyant cat icon (favicon + header logo)
+    INIT_JS,           # ~500 lines of browser JS (Web Audio chain, FX sync, hover gifs)
+    CUSTOM_CSS,        # ~1 200 lines of Gradio CSS (dark theme, Easter egg animations)
+    _ICON_B64,         # base64 PNG: Subvoyant cat icon (favicon + header logo)
+    _MAX_FIRE_GIF_B64, # base64 GIF: MaxFire02 (beat-mask hover Easter egg)
 )
 
 # slurm_ui: the entire Gradio layout and all event handlers.
@@ -177,9 +178,73 @@ if __name__ == "__main__":
         '</script>'
     )
 
+    # MaxFire hover — beat mask Easter egg.
+    # Uses a JS-managed <img> (position:fixed) rather than CSS ::after so that
+    # the GIF restarts from frame 1 on every mouseenter.  CSS ::after with
+    # opacity:0 keeps a non-looping GIF running in the background — by the time
+    # the user hovers a second time the animation has finished and the element
+    # shows a frozen last frame.  The src="" → src=url trick forces a reload
+    # and restarts the animation reliably regardless of loop count.
+    # position:fixed bypasses any parent overflow:hidden in the Gradio layout.
+    _maxfire_js = (
+        '<script>\n'
+        '(function () {\n'
+        '    var _mfUrl = "data:image/gif;base64,'
+        f'{_MAX_FIRE_GIF_B64}";\n'
+        '    var _mfEl = null;\n'
+        '    function _mfGet() {\n'
+        '        if (!_mfEl) {\n'
+        '            _mfEl = document.createElement("img");\n'
+        '            _mfEl.style.cssText = [\n'
+        '                "position:fixed",\n'
+        '                "width:240px",\n'
+        '                "pointer-events:none",\n'
+        '                "z-index:9999",\n'
+        '                "display:none",\n'
+        '                "filter:drop-shadow(0 8px 24px rgba(0,0,0,0.75))"\n'
+        '            ].join(";");\n'
+        '            document.body.appendChild(_mfEl);\n'
+        '        }\n'
+        '        return _mfEl;\n'
+        '    }\n'
+        '    function _mfShow() {\n'
+        '        var panel = document.getElementById("slurm-beat-mask");\n'
+        '        if (!panel) return;\n'
+        '        var r = panel.getBoundingClientRect();\n'
+        '        var el = _mfGet();\n'
+        '        var w = 240, h = 167;\n'
+        '        el.style.left = (r.left + r.width / 2 - w / 2) + "px";\n'
+        '        el.style.top  = (r.top - h) + "px";\n'
+        '        // Clear then restore src — forces GIF restart from frame 1\n'
+        '        // on every hover, even for non-looping GIFs.\n'
+        '        el.src = "";\n'
+        '        el.src = _mfUrl;\n'
+        '        el.style.display = "block";\n'
+        '    }\n'
+        '    function _mfHide() {\n'
+        '        if (_mfEl) _mfEl.style.display = "none";\n'
+        '    }\n'
+        '    // Poll until #slurm-beat-mask appears (built by _slurmBuildBeatMask\n'
+        '    // via setInterval — may not exist at page load time).\n'
+        '    var _mfTries = 0;\n'
+        '    var _mfIv = setInterval(function () {\n'
+        '        var panel = document.getElementById("slurm-beat-mask");\n'
+        '        if (panel) {\n'
+        '            clearInterval(_mfIv);\n'
+        '            panel.addEventListener("mouseenter", _mfShow);\n'
+        '            panel.addEventListener("mouseleave", _mfHide);\n'
+        '        } else if (++_mfTries > 60) {\n'
+        '            clearInterval(_mfIv);\n'
+        '        }\n'
+        '    }, 500);\n'
+        '})();\n'
+        '</script>'
+    )
+
     _head = (
         f"{_fonts}\n"
         f"<script>\n{INIT_JS}\n</script>\n"
+        f"{_maxfire_js}\n"
         f"{_favicon_links}\n"
         f"{_favicon_js}"
     )
