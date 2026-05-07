@@ -98,6 +98,101 @@ import pyrubberband as pyrb
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# _note_to_ms — musical-note → milliseconds conversion
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Slurmify lets the user express the four MUSICAL time parameters
+# (stutter_skip, beat_trim_start, beat_trim_end, beat_gap) in either
+# milliseconds (the historical knob) or note fractions (1/16, 1/8., 1/4T, …).
+# The UI sends both — a `_ms` slider value and an optional `_note` string —
+# and slurmify() picks whichever is "active" for the user.  This helper
+# performs the conversion, using the SAME BPM that detect_slice_points()
+# settled on for the slice grid.  That single-BPM rule is what keeps a
+# "1/16 note gap" actually align rhythmically with a 1/16-note slice
+# resolution; see ADR-0020 for the design rationale.
+#
+# Grammar
+# -------
+#   "1/N"     whole-note fraction (1/4 = quarter note = 1 beat at 4/4)
+#   "1/N."    dotted variant — value × 1.5
+#   "1/NT"    triplet variant — value × 2/3
+#   "1" / "2" whole-note multiples (1 = 4 beats; 2 = 8 beats)
+#
+# Examples at 120 BPM (one beat = 500 ms):
+#   "1/4"  → 500   "1/8"  → 250   "1/16" → 125
+#   "1/8." → 375   "1/8T" → 166.7 "1"    → 2000   "2" → 4000
+#
+# Returns 0.0 for None / empty / unparseable input or non-positive BPM, so
+# the caller can use the result directly as "no override" (matching the
+# existing `if value > 0:` guards inside slurmify's per-slice DSP).
+# ────────────────────────────────────────────────────────────────────────────
+
+def _note_to_ms(note: str | None, bpm: float) -> float:
+    """Convert a musical note fraction string to milliseconds at the given BPM.
+
+    Used by slurmify() when the UI is in note mode.  Pass detect_slice_points's
+    returned BPM so the conversion shares its source of truth with the slice
+    grid (see ADR-0020).
+
+    Parameters
+    ----------
+    note : str or None
+        Note fraction string per the grammar above (e.g. "1/16", "1/8.",
+        "1/4T", "1", "2").  None / empty / "off" / unparseable → 0.0.
+    bpm : float
+        Beats per minute.  Must be > 0; otherwise the result is 0.0.
+
+    Returns
+    -------
+    float
+        Duration in milliseconds.  0.0 means "no override" — the caller
+        should fall back to its corresponding `_ms` parameter.
+    """
+    # Reject obviously-bad inputs early.  Treat these as "no note set" so
+    # callers can pass user-typed strings through without pre-validating.
+    if not note or not isinstance(note, str):
+        return 0.0
+    s = note.strip()
+    if not s or s.lower() == "off":
+        return 0.0
+    if bpm <= 0:
+        return 0.0
+
+    # Strip the optional suffix modifier.  Only one suffix is supported; we
+    # don't try to parse compound forms like "1/8T." (which are musically
+    # ambiguous anyway — dotted-triplet notation is rare and inconsistent).
+    dotted  = False
+    triplet = False
+    if s.endswith("."):
+        dotted = True
+        s = s[:-1]
+    elif s.endswith("T"):
+        triplet = True
+        s = s[:-1]
+
+    # Parse "1/N" as a fraction; bare integers parse as whole-note multiples.
+    try:
+        if "/" in s:
+            num_str, den_str = s.split("/", 1)
+            value = float(num_str) / float(den_str)
+        else:
+            value = float(s)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+    # `value` is now in WHOLE-NOTE units.  Convert to beats (4 beats per whole
+    # note in 4/4 — the only meter Slurmify recognises today) and then to ms
+    # via the BPM.  Apply the dotted / triplet multiplier on the way through.
+    beats = value * 4.0
+    if dotted:
+        beats *= 1.5
+    elif triplet:
+        beats *= 2.0 / 3.0
+
+    return beats * (60_000.0 / bpm)
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # detect_slice_points
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -107,8 +202,8 @@ def detect_slice_points(
     resolution: str,
     transient_sensitivity: float,
     bpm_override: float | None = None,
-) -> np.ndarray:
-    """Return sample indices where the audio should be sliced.
+) -> tuple[np.ndarray, float]:
+    """Return sample indices where the audio should be sliced + the effective BPM.
 
     This is the "where to cut" engine.  It does NOT cut the audio itself —
     it just decides the positions.  The actual cutting happens in slurmify().
@@ -174,10 +269,26 @@ def detect_slice_points(
 
     Returns
     -------
-    np.ndarray
-        1-D int64 array of sample indices.  The first element is always
-        either 0 or close to 0; the last is always ≤ len(y).
+    tuple[np.ndarray, float]
+        positions : 1-D int64 array of sample indices.  The first element is
+            always either 0 or close to 0; the last is always ≤ len(y).
+        effective_bpm : The BPM that was used (or implied) by this slicer
+            run.  For beat-grid mode it is the value librosa landed on (or
+            the bpm_override, whichever drove the grid).  For MAX RANDOM —
+            which doesn't use a beat grid — it is `bpm_override` if set,
+            else 120.0 as a safe default.
+
+            slurmify() forwards this BPM to _note_to_ms so that note-mode
+            time parameters (trim/stutter/gap) line up rhythmically with
+            the slice grid.  Returning it here, rather than recomputing
+            inside slurmify, guarantees a single source of truth — see
+            ADR-0020 for why this matters.
     """
+    # MAX RANDOM and the librosa-failure fallback both use this default when
+    # there is no detected BPM and no override.  Kept at 120 because most
+    # contemporary music sits in the 100–140 range and 120 is the common
+    # default value used by DAWs as a starting tempo.
+    DEFAULT_BPM = 120.0
     # Smallest gap between two consecutive slice points.
     # 256 samples at 44.1 kHz ≈ 5.8 ms — shorter than this, the envelope
     # crossfade (apply_envelope) has no room to operate cleanly.
@@ -227,7 +338,12 @@ def detect_slice_points(
             f"max={gaps_ms.max():.0f}ms "
             f"median={np.median(gaps_ms):.0f}ms"
         )
-        return np.array(positions, dtype=np.int64)
+        # MAX RANDOM has no beat grid → no detected BPM.  Use the override if
+        # the user supplied one, otherwise the safe default.  This value is
+        # only used by note-mode time parameters (trim/stutter/gap); the
+        # actual slicing has already happened above with no BPM dependency.
+        effective_bpm = float(bpm_override) if bpm_override else DEFAULT_BPM
+        return np.array(positions, dtype=np.int64), effective_bpm
 
     # ── Beat detection ──────────────────────────────────────────────────────
     # We keep beat_frames (the frame indices, not just the count _) so we
@@ -251,14 +367,14 @@ def detect_slice_points(
         bpm = float(np.atleast_1d(tempo)[0])
         if bpm <= 0:
             # Pathological case (silence, or extremely sparse audio).
-            bpm = float(bpm_override) if bpm_override else 120.0
+            bpm = float(bpm_override) if bpm_override else DEFAULT_BPM
         # Convert frame indices to absolute sample positions.
         beat_samples = librosa.frames_to_samples(beat_frames).astype(np.int64)
     except Exception:
         # If librosa throws (e.g. audio too short to analyse), fall back to
-        # a uniform grid at the BPM hint or 120 BPM.
+        # a uniform grid at the BPM hint or DEFAULT_BPM.
         beat_samples = np.array([], dtype=np.int64)
-        bpm = float(bpm_override) if bpm_override else 120.0
+        bpm = float(bpm_override) if bpm_override else DEFAULT_BPM
 
     print(
         f"[slurm] BPM={bpm:.1f} beats={len(beat_samples)}"
@@ -362,7 +478,7 @@ def detect_slice_points(
     # If transient_sensitivity is essentially zero, skip onset detection
     # entirely and return the pure beat grid.
     if transient_sensitivity <= 0.01:
-        return grid_points
+        return grid_points, bpm
 
     # ── Onset detection (transient snapping) ────────────────────────────────
     # librosa.onset.onset_detect returns frame indices where significant
@@ -381,11 +497,11 @@ def detect_slice_points(
 
     # Nothing to snap to → return the beat grid as-is.
     if len(onset_samples) == 0:
-        return grid_points
+        return grid_points, bpm
 
     # At full sensitivity, ignore the beat grid entirely and use raw onsets.
     if transient_sensitivity >= 0.99:
-        return onset_samples
+        return onset_samples, bpm
 
     # ── Hybrid mode: snap grid points toward nearby onsets ─────────────────
     # The snap window is proportional to the grid spacing and inversely
@@ -406,7 +522,7 @@ def detect_slice_points(
 
     # Deduplicate and sort (snapping multiple grid points to the same onset
     # is valid — it just means fewer unique slice boundaries).
-    return np.array(sorted(set(snapped)), dtype=np.int64)
+    return np.array(sorted(set(snapped)), dtype=np.int64), bpm
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -481,11 +597,25 @@ def slurmify(
     stutter_skip_ms: float = 0.0,
     stutter_max_reps: int = 4,
     stutter_spread: float = 0.0,
+    beat_trim_start_ms: float = 0.0,
+    beat_trim_end_ms: float = 0.0,
+    beat_gap_ms: float = 0.0,
     bpm_override: float | None = None,
     start_sec: float = 0.0,
     end_sec: float = 0.0,
     seed: int | None = None,
-    bar_mask: list[bool] | None = None,
+    beat_mask: list[bool] | None = None,
+    # ── Note-mode time parameters (ADR-0020) ────────────────────────────────
+    # Each of these is the note-fraction counterpart of the matching `_ms`
+    # parameter above.  When non-empty, the note string takes precedence: it
+    # is converted to milliseconds via _note_to_ms() using the same BPM that
+    # detect_slice_points settled on, and OVERRIDES the corresponding `_ms`
+    # value before any per-slice DSP runs.  When empty / None, the existing
+    # `_ms` value is used unchanged (full backward compatibility).
+    stutter_skip_note: str | None = None,
+    beat_trim_start_note: str | None = None,
+    beat_trim_end_note: str | None = None,
+    beat_gap_note: str | None = None,
     _progress=None,
 ) -> tuple[np.ndarray, int]:
     """Run the full slurm transformation on an audio array.
@@ -559,17 +689,50 @@ def slurmify(
         Trim audio to this position.  0 = use full file.
     seed : int or None
         Random seed.  Set for reproducible output; None = fresh randomness.
-    bar_mask : list[bool] or None
+    beat_trim_start_ms : float
+        Trim this many milliseconds from the START of every slice before the
+        envelope is applied.  0 = no trim (default).  Kills the attack
+        transient; at high values creates a gated or risked effect.  The trim
+        happens on the raw (pre-envelope) slice so the fade-in lands cleanly
+        at the new cut point.  A slice trimmed below 4 samples is discarded.
+    beat_trim_end_ms : float
+        Trim this many milliseconds from the END of every slice before the
+        envelope is applied.  0 = no trim (default).  Shortens the decay /
+        tail; higher values give a tighter, more staccato feel.  Can be
+        combined with beat_trim_start_ms to trim from both ends at once.
+    beat_gap_ms : float
+        Insert this many milliseconds of silence BETWEEN every slice after all
+        per-slice processing is complete.  0 = no gap (default, slices butt
+        directly against each other as before).  Higher values push the beats
+        apart rhythmically — at short values (10–50 ms) it creates a staccato
+        pocket feel; at long values (500–3600 ms) beats become isolated events
+        with audible space between them.  The gap is pure digital silence (all
+        zeros), so it does not interact with stutter, trim, or the beat mask.
+        Applied after shuffle so the spacing is uniform regardless of order.
+    beat_mask : list[bool] or None
         Per-beat dropout pattern within each bar.  When set, slice i is kept
-        only if ``bar_mask[i % len(bar_mask)]`` is True.  This lets the user
-        toggle individual beat positions in the bar on/off — e.g., at 1/4
-        resolution with bar_mask=[True, False, True, False], only beats 1 and
-        3 of every bar survive in the output.
+        only if ``beat_mask[i % len(beat_mask)]`` is True.  This lets the
+        user toggle individual beat positions in the bar on/off — e.g., at
+        1/4 resolution with beat_mask=[True, False, True, False], only beats
+        1 and 3 of every bar survive in the output.
 
         The UI sends one bool per chip button; the chip count matches the
         number of note-subdivisions per bar for the active resolution.
 
         ``None`` or an all-True list = keep everything (default behaviour).
+    stutter_skip_note : str or None
+    beat_trim_start_note : str or None
+    beat_trim_end_note : str or None
+    beat_gap_note : str or None
+        Optional note-mode counterparts to the matching `_ms` parameters
+        above.  When the user toggles a slider into "♪" mode the UI sends
+        a note string here (e.g. "1/16", "1/8.", "1/4T") and slurmify
+        converts it to ms via _note_to_ms() using the BPM returned by
+        detect_slice_points.  An empty string or None means "use the ms
+        value instead" — preserving full backward compatibility for
+        callers that don't know about note mode (notably the metadata-
+        driven render_video path when reading older PATCH JSON blobs).
+        See ADR-0020 for the design.
     _progress : callable or None
         Optional progress callback: _progress(fraction_0_1, desc="...").
         Passed in by the Gradio UI so the user sees a progress bar.
@@ -635,10 +798,48 @@ def slurmify(
 
     _prog(0.40, "Finding slice points…")
     # ── Step 2: find slice points ────────────────────────────────────────────
-    slice_points = detect_slice_points(
+    # detect_slice_points() returns BOTH the cut positions and the effective
+    # BPM it landed on (detected, overridden, or default for MAX RANDOM).
+    # We forward that BPM into _note_to_ms below — single source of truth.
+    slice_points, effective_bpm = detect_slice_points(
         y, sr, resolution, transient_sensitivity,
         bpm_override=bpm_override,
     )
+
+    # ── Step 2b: resolve note-mode time parameters (ADR-0020) ───────────────
+    # When the UI is in "♪" mode for a slider, it sends the note string in
+    # the corresponding *_note argument.  We convert here, AFTER the slicer
+    # has chosen its BPM, so a "1/16 gap" lines up rhythmically with a 1/16
+    # slice resolution — even if librosa picked an unexpected tempo octave.
+    #
+    # Empty / None notes pass through; the existing `_ms` value wins.  This
+    # keeps every legacy caller (PATCH metadata reload, scripted tests,
+    # the previous render_video API) fully working with no migration.
+    if stutter_skip_note:
+        ms_from_note = _note_to_ms(stutter_skip_note, effective_bpm)
+        if ms_from_note > 0:
+            stutter_skip_ms = ms_from_note
+    if beat_trim_start_note:
+        ms_from_note = _note_to_ms(beat_trim_start_note, effective_bpm)
+        if ms_from_note > 0:
+            beat_trim_start_ms = ms_from_note
+    if beat_trim_end_note:
+        ms_from_note = _note_to_ms(beat_trim_end_note, effective_bpm)
+        if ms_from_note > 0:
+            beat_trim_end_ms = ms_from_note
+    if beat_gap_note:
+        ms_from_note = _note_to_ms(beat_gap_note, effective_bpm)
+        if ms_from_note > 0:
+            beat_gap_ms = ms_from_note
+
+    print(
+        f"[slurm] effective BPM for note-mode params: {effective_bpm:.1f} · "
+        f"stutter_skip_ms={stutter_skip_ms:.1f} "
+        f"trim_start_ms={beat_trim_start_ms:.1f} "
+        f"trim_end_ms={beat_trim_end_ms:.1f} "
+        f"gap_ms={beat_gap_ms:.1f}"
+    )
+
     if len(slice_points) < 2:
         # Audio is too short or detection returned nothing useful.
         # Return the stretched audio as-is without slicing.
@@ -656,24 +857,24 @@ def slurmify(
     if slice_points[-1] < len(y):
         slices.append(y[int(slice_points[-1]):])
 
-    # ── Step 3b: bar mask filtering (optional) ──────────────────────────────
-    # The bar mask is a list of N booleans where N = number of note-
+    # ── Step 3b: beat mask filtering (optional) ─────────────────────────────
+    # The beat mask is a list of N booleans where N = number of note-
     # subdivisions per bar at the active resolution (e.g. 4 bools for 1/4,
     # 8 for 1/8, 16 for 1/16).  Slice i is retained iff:
     #
-    #     bar_mask[i % N]  is True
+    #     beat_mask[i % N]  is True
     #
     # This produces a repeating per-bar dropout pattern: every occurrence of
-    # beat 2 across the whole file can be silenced by setting bar_mask[1]=False
+    # beat 2 across the whole file can be silenced by setting beat_mask[1]=False
     # at 1/4 resolution.
     #
     # Skip the filtering entirely when:
-    #   • bar_mask is None (feature not engaged — default)
-    #   • bar_mask is all-True (all beats on = no change)
+    #   • beat_mask is None (feature not engaged — default)
+    #   • beat_mask is all-True (all beats on = no change)
     # This avoids any performance overhead on the common "no mask" path.
-    if bar_mask and not all(bar_mask):
-        n_mask = len(bar_mask)
-        slices = [s for i, s in enumerate(slices) if bar_mask[i % n_mask]]
+    if beat_mask and not all(beat_mask):
+        n_mask = len(beat_mask)
+        slices = [s for i, s in enumerate(slices) if beat_mask[i % n_mask]]
         if not slices:
             # Every slice was masked out (user toggled all chips off).
             # Return 1 sample of silence — avoids a div-by-zero in the
@@ -690,15 +891,44 @@ def slurmify(
             # Slice is too short to do anything useful with.
             continue
 
-        # 4a. Apply fade-in/out to prevent clicks at the cut boundaries.
+        # 4a. Beat trim: shorten the raw slice from the start and/or end.
+        #
+        #     This runs BEFORE the envelope so the fade-in/fade-out always
+        #     lands at the actual cut points, not at the original (pre-trim)
+        #     boundaries.  Both trims are independent and can be used together.
+        #
+        #     beat_trim_start_ms > 0:
+        #       Remove the first N ms.  Kills the attack transient.  Useful
+        #       for a gated or "late entry" effect — the beat sounds like it
+        #       starts mid-phrase.  Combined with the beat mask, lets you keep
+        #       a beat position in the output while sculpting exactly which
+        #       part of it is heard.
+        #
+        #     beat_trim_end_ms > 0:
+        #       Remove the last N ms.  Shortens the decay/tail.  Makes the
+        #       output tighter and more staccato.  At high values the slice
+        #       ends abruptly after the initial attack — a hard chop style.
+        if beat_trim_start_ms > 0 and len(s) > 4:
+            trim_n = min(int(sr * beat_trim_start_ms / 1000.0), len(s) - 4)
+            if trim_n > 0:
+                s = s[trim_n:]
+        if beat_trim_end_ms > 0 and len(s) > 4:
+            trim_n = min(int(sr * beat_trim_end_ms / 1000.0), len(s) - 4)
+            if trim_n > 0:
+                s = s[:-trim_n]
+        if len(s) < 4:
+            # Trim ate almost the whole slice — nothing useful left.
+            continue
+
+        # 4b. Apply fade-in/out to prevent clicks at the (trimmed) cut boundaries.
         s = apply_envelope(s, sr, envelope_ms)
 
-        # 4b. Random reverse: flip the slice's time axis.
+        # 4c. Random reverse: flip the slice's time axis.
         #     Probability controlled by reverse_chance (0 = never, 1 = always).
         if reverse_chance > 0 and random.random() < reverse_chance:
             s = s[::-1].copy()   # copy() detaches from the original slice view
 
-        # 4c. Stutter / repeat.
+        # 4d. Stutter / repeat.
         #     Two modes, controlled by stutter_skip_ms:
         #
         #     Classic mode (stutter_skip_ms == 0):
@@ -753,7 +983,36 @@ def slurmify(
     if randomize_order:
         random.shuffle(processed)
 
-    # ── Step 6: concatenate ─────────────────────────────────────────────────
+    # ── Step 6: insert inter-beat silence (optional) ────────────────────────
+    # When beat_gap_ms > 0, inject a block of zeros between every pair of
+    # consecutive slices.  This "pushes" the beats apart rhythmically —
+    # short gaps (10–50 ms) create a staccato pocket; long gaps (500 ms+)
+    # turn each beat into an isolated event surrounded by audible space.
+    #
+    # Implementation: build a list that alternates processed[i] / silence
+    # and pass that to np.concatenate.  This avoids repeated np.hstack calls
+    # that would create O(n²) intermediate arrays.
+    #
+    # The gap is applied AFTER shuffle so spacing is uniform regardless of
+    # whether the user randomised the order.  It is NOT applied after the
+    # last slice (no trailing silence).
+    if beat_gap_ms > 0 and len(processed) > 1:
+        gap_n  = int(sr * beat_gap_ms / 1000.0)
+        # n_channels: 1 for mono, 2 for stereo — match the shape of the slices.
+        n_ch   = processed[0].shape[0] if processed[0].ndim == 2 else None
+        silence = (
+            np.zeros((n_ch, gap_n), dtype=np.float32)
+            if n_ch is not None
+            else np.zeros(gap_n, dtype=np.float32)
+        )
+        spaced: list[np.ndarray] = []
+        for i, s in enumerate(processed):
+            spaced.append(s)
+            if i < len(processed) - 1:
+                spaced.append(silence)
+        processed = spaced
+
+    # ── Step 7: concatenate ─────────────────────────────────────────────────
     if not processed:
         # All slices were dropped (too short).  Return the original stretched
         # audio rather than an empty array.
@@ -761,7 +1020,7 @@ def slurmify(
     else:
         out = np.concatenate(processed)
 
-    # ── Step 7: soft normalize to –1 dBFS ──────────────────────────────────
+    # ── Step 8: soft normalize to –1 dBFS ──────────────────────────────────
     # After stutter tiling, amplitude can pile up significantly.  Normalise
     # to 0.891× peak (≈ –1 dBFS) so we stay just below clipping without
     # imposing a hard limiter.  If the output is silence (peak == 0), skip.

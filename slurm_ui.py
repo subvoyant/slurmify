@@ -99,7 +99,7 @@ from ui_assets import _ICON_TAG
 # in the MP4 metadata.  The slurm-tag <div> in build_ui() hard-codes it too
 # (Gradio HTML is a string, not an expression) — keep both in sync when
 # bumping the version.  Also update build.sh and slurmify.spec.
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,6 +123,74 @@ _AUDIO_EXTS = frozenset({
     ".mp3", ".wav", ".aif", ".aiff", ".aac", ".m4a",
     ".flac", ".ogg", ".opus", ".wma", ".ape", ".alac",
 })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Note-mode constants (ADR-0020)
+# ─────────────────────────────────────────────────────────────────────────────
+# The four MUSICAL time parameters (stutter_skip, beat_trim_start,
+# beat_trim_end, beat_gap) each get a per-slider unit toggle ("ms ⇄ ♪")
+# in the UI.  When the user picks "♪" mode, the slider is hidden and a
+# Dropdown of note fractions takes its place.  The selected note string is
+# converted to milliseconds inside slurmify() using detect_slice_points'
+# returned BPM (single source of truth — see ADR-0020 §single-bpm).
+#
+# _NOTE_CHOICES is the same list for all four dropdowns so users see a
+# consistent vocabulary.  The grammar is parsed by _note_to_ms in slurmcore:
+#   "1/N"   straight subdivisions (1/64 → 1/2)
+#   "1/N."  dotted (×1.5)
+#   "1/NT"  triplet (×2/3)
+#   "1"     whole note (4 beats)
+#   "2"     two whole notes (8 beats — useful for long sparse gaps)
+#
+# At 120 BPM these correspond roughly to:
+#   1/64 ≈ 31 ms · 1/32 ≈ 63 ms · 1/16 ≈ 125 ms · 1/8 ≈ 250 ms ·
+#   1/4 = 500 ms · 1/2 = 1000 ms · 1 = 2000 ms · 2 = 4000 ms.
+_NOTE_CHOICES = [
+    "1/64",  "1/32",
+    "1/16T", "1/16", "1/16.",
+    "1/8T",  "1/8",  "1/8.",
+    "1/4T",  "1/4",  "1/4.",
+    "1/2",   "1",    "2",
+]
+
+# Default note value when the user first flips a slider into "♪" mode.
+# 1/16 is a common chop length that matches the default slice resolution
+# (also "1/16") so the result feels coherent on the first try.
+_NOTE_DEFAULT = "1/16"
+
+# Mode toggle choices.  The "♪" glyph (U+266A EIGHTH NOTE) renders
+# legibly in every browser font we've tested without needing a fallback.
+# Order matters — "ms" is the default so it appears first.
+_UNIT_MODE_CHOICES = ["ms", "♪"]
+
+
+def _swap_unit_mode(mode: str):
+    """Visibility swap for a (slider, note_dropdown) pair driven by a mode radio.
+
+    Returns two `gr.update(visible=...)` objects for the slider and the
+    note dropdown respectively.  Wired to each unit-mode radio's `.change`
+    event in build_ui() — Gradio applies the visibility update without a
+    full page rerender so the swap is instant.
+
+    The hint span next to each slider is updated client-side by JS in
+    INIT_JS — keeping it out of this Python handler avoids a Python
+    round-trip on every slider drag.
+
+    Parameters
+    ----------
+    mode : str
+        Either "ms" or "♪" (or anything else, treated as "ms").
+
+    Returns
+    -------
+    tuple[gr.update, gr.update]
+        (slider_visibility, dropdown_visibility) — exactly one of each
+        pair is visible at any time.
+    """
+    if mode == "♪":
+        return gr.update(visible=False), gr.update(visible=True)
+    return gr.update(visible=True), gr.update(visible=False)
 
 
 def _leetify(chars: list[str], rng: random.Random, prob: float = 0.5) -> list[str]:
@@ -315,13 +383,23 @@ def render_video(
     preserve_pitch, pitch_shift_semitones,
     randomize_order, reverse_chance, stutter_chance,
     stutter_skip_ms, stutter_max_reps, stutter_spread,
+    beat_trim_start_ms, beat_trim_end_ms, beat_gap_ms,
     bpm_override_text,
     seed_text,
-    bar_mask_json,
+    beat_mask_json,
+    # Note-mode counterparts (ADR-0020) — added in v0.1.5 ────────────────────
+    # Each (mode, note) pair captures whether a slider was in ms or ♪ mode
+    # at render time and, if ♪, what note fraction the user picked.  These
+    # land in the PATCH metadata so a re-imported MP4 can faithfully restore
+    # both the value AND the unit the user was working with.
+    stutter_skip_mode_val: str = "ms",   stutter_skip_note_val: str = "",
+    beat_trim_start_mode_val: str = "ms", beat_trim_start_note_val: str = "",
+    beat_trim_end_mode_val: str = "ms",   beat_trim_end_note_val: str = "",
+    beat_gap_mode_val: str = "ms",        beat_gap_note_val: str = "",
     # FX params (for metadata blob) ────────────────────────────────────────────
-    dist_drive, ring_freq, ring_depth,
-    delay_time, delay_fb, delay_mix,
-    phase_rate, phase_depth,
+    dist_drive=None, ring_freq=None, ring_depth=None,
+    delay_time=None, delay_fb=None, delay_mix=None,
+    phase_rate=None, phase_depth=None,
 ):
     """Render a YouTube-ready MP4 (1920×1080) from the slurm output.
 
@@ -444,14 +522,31 @@ def render_video(
             "stutter_skip_ms":       float(stutter_skip_ms) if stutter_skip_ms is not None else 0.0,
             "stutter_max_reps":      int(stutter_max_reps) if stutter_max_reps is not None else 4,
             "stutter_spread":        float(stutter_spread) if stutter_spread is not None else 0.0,
+            "beat_trim_start_ms":    float(beat_trim_start_ms) if beat_trim_start_ms is not None else 0.0,
+            "beat_trim_end_ms":      float(beat_trim_end_ms) if beat_trim_end_ms is not None else 0.0,
+            "beat_gap_ms":           float(beat_gap_ms) if beat_gap_ms is not None else 0.0,
             "bpm_override":          (float(bpm_override_text)
                                       if bpm_override_text and str(bpm_override_text).strip()
                                       else None),
-            # bar_mask is stored as the raw JSON string (e.g. "[true,false,true,true]")
+            # beat_mask is stored as the raw JSON string (e.g. "[true,false,true,true]")
             # so the PATCH blob is round-trippable without losing fidelity.
-            "bar_mask":              (bar_mask_json.strip()
-                                      if bar_mask_json and str(bar_mask_json).strip()
+            "beat_mask":             (beat_mask_json.strip()
+                                      if beat_mask_json and str(beat_mask_json).strip()
                                       else None),
+            # ── Note-mode unit selections (ADR-0020) ──────────────────────
+            # These four (mode, note) pairs let a re-imported PATCH faithfully
+            # restore which sliders were in ♪ mode at render time and what
+            # note fractions they were set to.  Older PATCH blobs from v0.1.4
+            # and earlier won't have these keys; the importer should treat
+            # missing keys as ("ms", "") (full backward compatibility).
+            "stutter_skip_mode":     str(stutter_skip_mode_val or "ms"),
+            "stutter_skip_note":     str(stutter_skip_note_val or ""),
+            "beat_trim_start_mode":  str(beat_trim_start_mode_val or "ms"),
+            "beat_trim_start_note":  str(beat_trim_start_note_val or ""),
+            "beat_trim_end_mode":    str(beat_trim_end_mode_val or "ms"),
+            "beat_trim_end_note":    str(beat_trim_end_note_val or ""),
+            "beat_gap_mode":         str(beat_gap_mode_val or "ms"),
+            "beat_gap_note":         str(beat_gap_note_val or ""),
         },
         "fx": {
             "dist_drive":  float(dist_drive  or 0),
@@ -551,12 +646,29 @@ def process(
     stutter_skip_ms,
     stutter_max_reps,
     stutter_spread,
+    beat_trim_start_ms,
+    beat_trim_end_ms,
+    beat_gap_ms,
     bpm_override_text,
     output_format,
     start_sec,
     end_sec,
     seed_text,
-    bar_mask_json: str = "",
+    beat_mask_json: str = "",
+    # ── Note-mode counterparts (ADR-0020) ───────────────────────────────────
+    # Each of these matches a `_ms` parameter above.  The UI sends both;
+    # whichever mode the user has selected for that slider is the one whose
+    # value is "live".  We forward both into slurmify and pass a non-empty
+    # note string ONLY if the slider is currently in "♪" mode.  That
+    # decision is made below using the per-slider mode strings.
+    stutter_skip_mode_val: str = "ms",
+    stutter_skip_note_val: str = "",
+    beat_trim_start_mode_val: str = "ms",
+    beat_trim_start_note_val: str = "",
+    beat_trim_end_mode_val: str = "ms",
+    beat_trim_end_note_val: str = "",
+    beat_gap_mode_val: str = "ms",
+    beat_gap_note_val: str = "",
     progress=gr.Progress(),
 ):
     """Main Gradio event handler: slurmify the uploaded audio file.
@@ -606,17 +718,31 @@ def process(
         # textbox.  We parse it here and pass it to slurmify().
         # An empty string, all-True, or malformed JSON all resolve to None,
         # which tells slurmify() to keep everything (default behaviour).
-        bar_mask = None
-        if bar_mask_json and str(bar_mask_json).strip():
+        beat_mask = None
+        if beat_mask_json and str(beat_mask_json).strip():
             try:
-                arr = json.loads(bar_mask_json)
+                arr = json.loads(beat_mask_json)
                 if isinstance(arr, list) and len(arr) > 0:
                     bools = [bool(x) for x in arr]
                     # All-True = no masking — treat same as None for efficiency.
                     if not all(bools):
-                        bar_mask = bools
+                        beat_mask = bools
             except (json.JSONDecodeError, TypeError, ValueError):
-                bar_mask = None   # malformed JSON from the browser → ignore
+                beat_mask = None   # malformed JSON from the browser → ignore
+
+        # Resolve which note strings are "live" — only the ones whose mode
+        # toggle is currently set to "♪" should reach slurmify().  This way
+        # a slider that is in "ms" mode passes nothing for the note arg, and
+        # slurmify falls through to the `_ms` value untouched (the long-
+        # standing behaviour).  See ADR-0020.
+        active_stutter_skip_note    = (stutter_skip_note_val
+                                       if stutter_skip_mode_val == "♪" else "")
+        active_trim_start_note      = (beat_trim_start_note_val
+                                       if beat_trim_start_mode_val == "♪" else "")
+        active_trim_end_note        = (beat_trim_end_note_val
+                                       if beat_trim_end_mode_val == "♪" else "")
+        active_beat_gap_note        = (beat_gap_note_val
+                                       if beat_gap_mode_val == "♪" else "")
 
         # Load the audio into a numpy array.  slurmcore.slurmify is a pure DSP
         # function that takes arrays in and arrays out — it never touches the
@@ -637,11 +763,18 @@ def process(
             stutter_skip_ms=float(stutter_skip_ms or 0),
             stutter_max_reps=int(stutter_max_reps if stutter_max_reps is not None else 0),
             stutter_spread=float(stutter_spread or 0),
+            beat_trim_start_ms=float(beat_trim_start_ms or 0),
+            beat_trim_end_ms=float(beat_trim_end_ms or 0),
+            beat_gap_ms=float(beat_gap_ms or 0),
             bpm_override=bpm_ov,
             start_sec=float(start_sec or 0),
             end_sec=float(end_sec or 0),
             seed=seed,
-            bar_mask=bar_mask,
+            beat_mask=beat_mask,
+            stutter_skip_note=active_stutter_skip_note,
+            beat_trim_start_note=active_trim_start_note,
+            beat_trim_end_note=active_trim_end_note,
+            beat_gap_note=active_beat_gap_note,
             _progress=progress,
         )
         return _write_audio(y_out, sr_out, output_format)
@@ -702,7 +835,7 @@ def build_ui() -> gr.Blocks:
               """ + _ICON_TAG + """
               <div class="slurm-header-text">
                 <h1 class="slurm-title"><a href="https://www.subvoyant.com" target="_blank" rel="noopener noreferrer" class="slurm-header-link">SIENA SLURMER</a></h1>
-                <div class="slurm-tag">subvoyant · chopped · sped-up · transient-sliced · v0.1.4</div>
+                <div class="slurm-tag">subvoyant · chopped · sped-up · transient-sliced · v0.1.5</div>
               </div>
               <div class="slurm-skin-wrap">
                 <label for="slurm-skin-picker">skin</label>
@@ -827,17 +960,110 @@ def build_ui() -> gr.Blocks:
                 # Gradio's own output path into this textbox.  process() reads
                 # and parses the JSON string (e.g. "[true,false,true,true]").
                 # It is intentionally invisible — the chip strip above is the UI.
-                bar_mask_val = gr.Textbox(
+                beat_mask_val = gr.Textbox(
                     value="",
                     visible=False,
                     elem_id="slurm-beat-mask-val",
                     max_lines=1,
                 )
 
+                # Beat trim controls — sit directly below the chip strip,
+                # split 50/50 across the same column width.  These trim the
+                # raw slice from the start and/or end before the envelope is
+                # applied, so the fade lands at the new cut boundaries.
+                #
+                # Each trim control is a tuple of three Gradio components
+                # plus an HTML hint span — see ADR-0020:
+                #   • the original ms slider (visible by default)
+                #   • a note-fraction dropdown (visible only in ♪ mode)
+                #   • a mode toggle radio (ms ⇄ ♪)
+                #   • a hint <span> that JS keeps in sync with the active
+                #     value at the active BPM ("≈ 31 ms @ 120 BPM")
+                # Each component has a stable elem_id so INIT_JS can locate
+                # them by data-attribute when wiring up the live hint.
+                with gr.Row():
+                    with gr.Column():
+                        beat_trim_start = gr.Slider(
+                            label="trim start (ms)",
+                            minimum=0.0, maximum=500.0, step=5.0, value=0.0,
+                            info="remove N ms from the start of every beat · 0 = off",
+                            elem_id="slurm-trim-start-ms",
+                        )
+                        beat_trim_start_note = gr.Dropdown(
+                            label="trim start (♪)",
+                            choices=_NOTE_CHOICES, value=_NOTE_DEFAULT,
+                            visible=False,
+                            elem_id="slurm-trim-start-note",
+                            elem_classes=["slurm-dropdown", "slurm-note-dropdown"],
+                        )
+                        beat_trim_start_mode = gr.Radio(
+                            choices=_UNIT_MODE_CHOICES, value="ms",
+                            show_label=False, container=False,
+                            elem_id="slurm-trim-start-mode",
+                            elem_classes=["slurm-unit-toggle"],
+                        )
+                        gr.HTML(
+                            '<div class="slurm-unit-hint" '
+                            'id="slurm-unit-hint-trim-start" '
+                            'data-target="trim_start"></div>'
+                        )
+                    with gr.Column():
+                        beat_trim_end = gr.Slider(
+                            label="trim end (ms)",
+                            minimum=0.0, maximum=500.0, step=5.0, value=0.0,
+                            info="remove N ms from the end of every beat · 0 = off",
+                            elem_id="slurm-trim-end-ms",
+                        )
+                        beat_trim_end_note = gr.Dropdown(
+                            label="trim end (♪)",
+                            choices=_NOTE_CHOICES, value=_NOTE_DEFAULT,
+                            visible=False,
+                            elem_id="slurm-trim-end-note",
+                            elem_classes=["slurm-dropdown", "slurm-note-dropdown"],
+                        )
+                        beat_trim_end_mode = gr.Radio(
+                            choices=_UNIT_MODE_CHOICES, value="ms",
+                            show_label=False, container=False,
+                            elem_id="slurm-trim-end-mode",
+                            elem_classes=["slurm-unit-toggle"],
+                        )
+                        gr.HTML(
+                            '<div class="slurm-unit-hint" '
+                            'id="slurm-unit-hint-trim-end" '
+                            'data-target="trim_end"></div>'
+                        )
+
+                # Beat gap — full-width below the trim row.
+                beat_gap = gr.Slider(
+                    label="beat gap (ms)",
+                    minimum=0.0, maximum=3600.0, step=10.0, value=0.0,
+                    info="silence inserted between every beat · 0 = off · short = staccato · long = sparse/isolated",
+                    elem_id="slurm-beat-gap-ms",
+                )
+                beat_gap_note = gr.Dropdown(
+                    label="beat gap (♪)",
+                    choices=_NOTE_CHOICES, value=_NOTE_DEFAULT,
+                    visible=False,
+                    elem_id="slurm-beat-gap-note",
+                    elem_classes=["slurm-dropdown", "slurm-note-dropdown"],
+                )
+                beat_gap_mode = gr.Radio(
+                    choices=_UNIT_MODE_CHOICES, value="ms",
+                    show_label=False, container=False,
+                    elem_id="slurm-beat-gap-mode",
+                    elem_classes=["slurm-unit-toggle"],
+                )
+                gr.HTML(
+                    '<div class="slurm-unit-hint" '
+                    'id="slurm-unit-hint-beat-gap" '
+                    'data-target="beat_gap"></div>'
+                )
+
                 bpm_override = gr.Textbox(
                     label="BPM override (optional)",
                     placeholder="leave blank for auto-detect",
-                    info="set if the tempo sounds off — e.g. enter 140 if librosa detected 70",
+                    info="set if the tempo sounds off — e.g. enter 140 if librosa detected 70 · also drives the ♪→ms conversion shown next to musical sliders",
+                    elem_id="slurm-bpm-override",   # JS unit-hint reader targets this
                     max_lines=1,
                 )
                 transient_sensitivity = gr.Slider(
@@ -880,6 +1106,29 @@ def build_ui() -> gr.Blocks:
                     label="skip length (ms)",
                     minimum=0.0, maximum=500.0, step=5.0, value=0.0,
                     info="0 = full-slice repeat (classic) · 5–15 ms = glitch buzz · 20–50 ms = CD-skip · 100–500 ms = phrase loop",
+                    elem_id="slurm-stutter-skip-ms",
+                )
+                # Note-mode counterpart for stutter skip length (ADR-0020).
+                # Hidden by default; the unit toggle below swaps visibility.
+                # Default to a small note (1/32) since stutter is most musical
+                # at glitch-scale durations rather than long held-note loops.
+                stutter_skip_note = gr.Dropdown(
+                    label="skip length (♪)",
+                    choices=_NOTE_CHOICES, value="1/32",
+                    visible=False,
+                    elem_id="slurm-stutter-skip-note",
+                    elem_classes=["slurm-dropdown", "slurm-note-dropdown"],
+                )
+                stutter_skip_mode = gr.Radio(
+                    choices=_UNIT_MODE_CHOICES, value="ms",
+                    show_label=False, container=False,
+                    elem_id="slurm-stutter-skip-mode",
+                    elem_classes=["slurm-unit-toggle"],
+                )
+                gr.HTML(
+                    '<div class="slurm-unit-hint" '
+                    'id="slurm-unit-hint-stutter-skip" '
+                    'data-target="stutter_skip"></div>'
                 )
                 stutter_max_reps = gr.Slider(
                     label="reps (max)",
@@ -1005,13 +1254,45 @@ def build_ui() -> gr.Blocks:
         # A standalone fn=None handler with a real output is the reliable pattern
         # (same as in_btn / out_btn; see CLAUDE.md §"Python ↔ JavaScript boundary").
         # The JS rebuilds the chip strip for the new resolution, then returns ""
-        # to bar_mask_val — correctly resetting the mask to all-on whenever the
+        # to beat_mask_val — correctly resetting the mask to all-on whenever the
         # resolution changes (same reset that _slurmBuildBeatMask does internally).
         resolution.change(
             fn=None,
             inputs=[resolution],
-            outputs=[bar_mask_val],
+            outputs=[beat_mask_val],
             js="(v) => { window.slurmBuildBeatMask && window.slurmBuildBeatMask(v); return ['']; }",
+        )
+
+        # ── Unit-mode toggle handlers (ADR-0020) ──────────────────────────────
+        # Each of the four musical sliders has a paired (slider, dropdown,
+        # mode_radio) trio.  The mode radio's `.change` event drives a
+        # visibility swap between the slider and the dropdown via
+        # _swap_unit_mode().  Visibility updates apply instantly; no full
+        # rerender.
+        #
+        # localStorage persistence of the user's chosen mode is handled
+        # entirely client-side in INIT_JS — see _slurmInitUnitToggles in
+        # ui_assets.py.  This Python handler is concerned only with the
+        # "mode changed → swap visibility" reaction.
+        stutter_skip_mode.change(
+            fn=_swap_unit_mode,
+            inputs=stutter_skip_mode,
+            outputs=[stutter_skip_ms, stutter_skip_note],
+        )
+        beat_trim_start_mode.change(
+            fn=_swap_unit_mode,
+            inputs=beat_trim_start_mode,
+            outputs=[beat_trim_start, beat_trim_start_note],
+        )
+        beat_trim_end_mode.change(
+            fn=_swap_unit_mode,
+            inputs=beat_trim_end_mode,
+            outputs=[beat_trim_end, beat_trim_end_note],
+        )
+        beat_gap_mode.change(
+            fn=_swap_unit_mode,
+            inputs=beat_gap_mode,
+            outputs=[beat_gap, beat_gap_note],
         )
 
         # ── Randomize all slurm parameters ────────────────────────────────────
@@ -1044,6 +1325,14 @@ def build_ui() -> gr.Blocks:
                     [0, 0, 0, 10, 15, 20, 25, 30, 40, 50])),
                 stutter_max_reps:      int(random.choice([2, 3, 4, 4, 6, 8])),
                 stutter_spread:        round(random.uniform(0.0, 0.6), 2),
+                # Note-mode counterpart for stutter skip (ADR-0020).
+                # Only the dropdown is randomized; the mode radio is left alone
+                # so the user keeps whichever unit they were working in.  When
+                # in ms mode this update is invisible but harmless; when in ♪
+                # mode the user sees their dropdown reroll along with the rest.
+                # Bias toward short notes — that's where stutter is most musical.
+                stutter_skip_note:     random.choice(
+                    ["1/64", "1/32", "1/32", "1/16T", "1/16", "1/16", "1/16."]),
             }
 
         randomize_all_btn.click(
@@ -1052,7 +1341,8 @@ def build_ui() -> gr.Blocks:
             outputs=[speed, resolution, transient_sensitivity, envelope_ms,
                      preserve_pitch, pitch_shift_semitones, randomize_order,
                      reverse_chance, stutter_chance,
-                     stutter_skip_ms, stutter_max_reps, stutter_spread],
+                     stutter_skip_ms, stutter_max_reps, stutter_spread,
+                     stutter_skip_note],
         )
 
         # ── Reveal temp files in OS file browser ──────────────────────────────
@@ -1122,23 +1412,23 @@ def build_ui() -> gr.Blocks:
         #      of the component values).  The JS reads window._slurmBeatMask (the
         #      boolean array maintained by the chip-strip code in INIT_JS) and
         #      returns it as a JSON string.  The Python lambda receives that string,
-        #      stores it into bar_mask_val, and simultaneously makes the dancer
+        #      stores it into beat_mask_val, and simultaneously makes the dancer
         #      visible.  This is the only reliable way to bridge JS state into
         #      Python in Gradio 5's Svelte runtime:
         #        - fn=None + outputs in a .then() step hangs (server never acks)
         #        - fn=None as the first .click() step silently breaks the chain
         #        - Writing to a <textarea> with the React native-setter trick does
         #          not update Svelte's internal state (always delivers "" to Python)
-        #   2. Run process() — reads bar_mask_val (now populated by step 1).
+        #   2. Run process() — reads beat_mask_val (now populated by step 1).
         #   3. Hide the dancer when done.
         go_btn.click(
             # js= runs client-side first; its return value becomes fn= inputs.
-            # Receives: bar_mask_val's current value (ignored by the JS).
+            # Receives: beat_mask_val's current value (ignored by the JS).
             # Returns:  [JSON string of window._slurmBeatMask, or "[]" if unset].
             # Python fn: makes dancer visible and passes mask JSON through to output.
             fn=lambda mask_json: (gr.Image(visible=True), mask_json),
-            inputs=[bar_mask_val],
-            outputs=[dancer, bar_mask_val],
+            inputs=[beat_mask_val],
+            outputs=[dancer, beat_mask_val],
             js="(m) => [JSON.stringify(window._slurmBeatMask || [])]",
         ).then(
             fn=process,
@@ -1147,9 +1437,18 @@ def build_ui() -> gr.Blocks:
                 envelope_ms, preserve_pitch, pitch_shift_semitones,
                 randomize_order, reverse_chance, stutter_chance,
                 stutter_skip_ms, stutter_max_reps, stutter_spread,
+                beat_trim_start, beat_trim_end, beat_gap,
                 bpm_override,
                 output_format, start_sec, end_sec, seed_text,
-                bar_mask_val,
+                beat_mask_val,
+                # ── Note-mode plumbing (ADR-0020) ──────────────────────────
+                # Order MUST match process()'s signature.  Each pair is
+                # (mode_val, note_val) and they correspond to the four
+                # musical sliders above in the same order.
+                stutter_skip_mode, stutter_skip_note,
+                beat_trim_start_mode, beat_trim_start_note,
+                beat_trim_end_mode, beat_trim_end_note,
+                beat_gap_mode, beat_gap_note,
             ],
             outputs=audio_out,
         ).then(
@@ -1382,9 +1681,17 @@ def build_ui() -> gr.Blocks:
                 preserve_pitch, pitch_shift_semitones,
                 randomize_order, reverse_chance, stutter_chance,
                 stutter_skip_ms, stutter_max_reps, stutter_spread,
+                beat_trim_start, beat_trim_end, beat_gap,
                 bpm_override,
                 seed_text,
-                bar_mask_val,
+                beat_mask_val,
+                # ── Note-mode (mode, note) pairs (ADR-0020) ──────────────
+                # Order MUST match render_video()'s signature so the metadata
+                # blob captures which sliders were in ♪ mode at export time.
+                stutter_skip_mode, stutter_skip_note,
+                beat_trim_start_mode, beat_trim_start_note,
+                beat_trim_end_mode, beat_trim_end_note,
+                beat_gap_mode, beat_gap_note,
                 # FX params for the PATCH metadata blob
                 fx_dist, fx_ring_freq, fx_ring_depth,
                 fx_delay_time, fx_delay_fb, fx_delay_mix,

@@ -45,6 +45,7 @@ folder corresponds to an item in the digest's "danger zones" list.
 | [0017](0017-slurmio-filesystem-extraction.md) | Extract filesystem IO into `slurmio.py` (Phase 3)           | Accepted |
 | [0018](0018-slurm-ui-extraction.md)           | Extract Gradio UI orchestration into `slurm_ui.py` (Phase 4) | Accepted |
 | [0019](0019-bar-mask-beat-dropout.md)         | Beat mask — per-beat dropout within each bar (chip strip UI) | Accepted |
+| [0020](0020-note-mode-time-parameters.md)     | Note-mode time parameters — per-slider ms ⇄ ♪ toggle         | Accepted |
 
 ## Numbering
 

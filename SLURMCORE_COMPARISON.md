@@ -688,4 +688,4 @@ narrative and `docs/adr/` for the architecture decision records.
 
 ---
 
-*Subvoyant SIENA Slurmer · v0.1.4 · Local, reproducible, opinionated slurmcore.*
+*Subvoyant SIENA Slurmer · v0.1.5 · Local, reproducible, opinionated slurmcore.*

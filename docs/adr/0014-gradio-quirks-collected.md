@@ -144,6 +144,30 @@ names for the loaded-state element vary. Prefer unconditional sizing
 or universal-descendant selectors when the dynamic state isn't
 exposed via a stable class name.
 
+### 13. `gr.Accordion(open=False)` does NOT render children in the DOM (Gradio 5+)
+
+Gradio 5 uses Svelte's `{#if}` semantics for accordion content.
+When `open=False`, the accordion's children are **completely absent
+from the DOM** — not hidden, not `display:none`, just not there.
+Opening the accordion causes Svelte to mount the children fresh.
+
+This affects any JS that looks for elements inside a closed accordion
+at page load (e.g. `document.getElementById('slurm-fx-audio')`).
+That query returns `null` until the user first opens the accordion.
+
+Our FX chain handles this with a 400 ms `setInterval` backup that
+polls for `#slurm-fx-audio` and activates as soon as it appears.
+The `audio_out.change` JS path logs "FX preview element not found"
+when the accordion is closed — that is **expected and handled**, not
+a bug. The `_fxBindPoll` 200 ms loop separately waits for the element
+before binding the `play` event listener.
+
+**If you add any component inside a closed accordion that JS needs at
+startup:** move it outside the accordion, or rely on polling rather
+than a one-shot `getElementById` at init time.
+
+*(Observed against Gradio 5 / 6.x, 2026-05)*
+
 ### 12. `elem_classes=[...]` is the most reliable styling hook
 
 Gradio's auto-generated class names (Svelte hashes, etc.) can change

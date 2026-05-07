@@ -28,7 +28,7 @@ breaking changes):
 
 ```json
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "source":  "<filename or null>",
   "seed":    <int or null>,
   "core":    { "speed": ..., "resolution": ..., "envelope_ms": ..., ... },

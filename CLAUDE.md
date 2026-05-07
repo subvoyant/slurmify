@@ -182,6 +182,19 @@ ignored. The full table with one-line warnings + ADR links lives in
 11. **Selecting MAX RANDOM auto-checks the shuffle box** via a
     `resolution.change()` handler. Do NOT internalize this in
     `slurmify()` — keep the UI state visible and overridable. (ADR-0013)
+12. **Single-BPM rule for note-mode time params.** The four musical
+    sliders (stutter skip, beat trim start/end, beat gap) can each be
+    toggled into "♪" mode. The note→ms conversion inside `slurmify()`
+    MUST use the BPM returned by `detect_slice_points` — that's why
+    that function now returns `(positions, bpm)`. Don't recompute BPM
+    elsewhere; don't decouple the slicer's tempo from the gap/trim
+    tempo. (ADR-0020)
+13. **Note-mode JS twin must match Python.** `_slurmNoteToMs` in
+    INIT_JS must produce the same numbers as `_note_to_ms` in
+    slurmcore.py. The JS exists for the live "≈ NN ms @ BPM" hint;
+    Python is the source of truth for the slurm output. Change the
+    grammar in one place → change it in the other in the same commit.
+    (ADR-0020)
 
 **For Gradio-specific oddities** (label rendering changes when `info=`
 is added, `:focus-within` block highlight, `gr.Audio.interactive=False`

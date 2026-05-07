@@ -1,6 +1,21 @@
-# Subvoyant SIENA Slurmer v0.1.4 — Beta Test Notes
+# Subvoyant SIENA Slurmer v0.1.5 — Beta Test Notes
 
 Hi Person — thanks for testing the SIENA Slurmer. Here's everything you need to know.
+
+---
+
+## What's new in 0.1.5
+
+A musicality release: the four time-based controls — **stutter skip length**, **trim start**, **trim end**, and **beat gap** — can now be set in note values (1/16, 1/8 dotted, 1/4 triplet, etc.) instead of (or in addition to) milliseconds. Think in music, not numbers.
+
+- **Per-slider ms ⇄ ♪ toggle.** Each of the four musical sliders has a tiny chip row right below it: click `ms` to keep the millisecond slider, click `♪` to swap in a note dropdown. Mutually exclusive — only one input is active at a time. You can mix freely: trim in ms, gap in 1/16 notes, whatever feels right.
+- **Note grammar with dotted + triplet.** The dropdown supports straight notes (1/64 → 2 whole notes), dotted (`1/8.` = ×1.5), and triplet (`1/8T` = ×2/3). Standard musical notation; matches what DAWs use.
+- **Live "≈ NN ms @ BPM" hint.** Below each toggle, a small italic line shows the equivalent value in the *other* unit, recomputed live as you drag the slider, change the dropdown, or type a new BPM override. So `1/16 → ≈ 125 ms @ 120 BPM`, and changing the BPM updates the hint instantly.
+- **BPM source: override or auto-detect.** The hint and the conversion both use whatever BPM the slicer is using. If you've typed a BPM override, that's the source of truth — both the slice grid and the gap/trim conversions will use it. If you leave the override blank, the hint shows the equivalent at 120 BPM (a default that matches the internal fallback) until librosa detects the real BPM at slurmify time, which is then used for the actual conversion. This means: a "1/16 note gap" always lines up rhythmically with a "1/16 slice resolution" — the slicer's tempo and the gap's tempo are the same value, by construction.
+- **Mode is remembered across sessions.** Your per-slider unit choice (ms or ♪) is saved in localStorage, just like the skin picker. Reload the app, your toggles stay where you left them.
+- **MP4 export captures unit selections.** The PATCH JSON in your video description now records which sliders were in ♪ mode and what notes you picked, so the file is fully self-describing.
+- **Note: envelope (ms) intentionally stays in ms.** Anti-click envelopes operate at 0–20 ms — sub-musical scale, far below 1/128 even at 200 BPM. Forcing notes there would be a footgun, so that slider is unchanged.
+- **Randomize all** now also re-rolls the stutter-skip note dropdown when you click the 🎲 button (biased toward short glitchy notes), so users in ♪ mode see their dropdown change too.
 
 ---
 
@@ -96,7 +111,7 @@ A big release. Everything that came after 0.0.7 (which Bob and Max have already)
 
 ## Installing
 
-1. Open the **SubvoyantSIENASlurmer-0.1.4.dmg** file you received
+1. Open the **SubvoyantSIENASlurmer-0.1.5.dmg** file you received
 2. Drag **Subvoyant SIENA Slurmer** into your **Applications** folder
 3. Eject the DMG (drag it to Trash, or right-click → Eject)
 
@@ -181,4 +196,4 @@ Close the browser tab, then quit Slurmify from the Dock (right-click → Quit) o
 
 ---
 
-*Subvoyant · Built with Python + Gradio · Runs 100% locally · v0.1.4 alpha*
+*Subvoyant · Built with Python + Gradio · Runs 100% locally · v0.1.5 alpha*

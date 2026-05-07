@@ -22,7 +22,7 @@ audio. Distributed as a code-signed, notarized macOS `.app` inside a
 `.dmg`.
 
 Current version: see `__version__` in `slurm_ui.py` and the matching
-`<div class="slurm-tag">` in `build_ui()` (truth copy is `build.sh`'s `VERSION="0.1.4"`).
+`<div class="slurm-tag">` in `build_ui()` (truth copy is `build.sh`'s `VERSION="0.1.5"`).
 
 ---
 
@@ -92,9 +92,11 @@ slurmio.py   — filesystem IO               (Phase 3 — ADR-0017)
 | `# Session-scoped temporary directory` | **slurmio.py** | `SESSION_TMP_DIR`, `_new_temp_path`, `_reveal_temp_dir`, atexit + orphan sweep (ADR-0011) |
 | `# Audio input` | **slurmio.py** | `SUPPORTED_EXTS`, `TARGET_SR`, `load_audio` |
 | `# Audio output` | **slurmio.py** | `_SF_FORMATS`, `_FFMPEG_FORMATS`, `_write_audio` |
-| `def detect_slice_points(` | **slurmcore.py** | beat-grid + transient-snap slice-point engine (MAX RANDOM trimodal — ADR-0012) |
+| `def _note_to_ms(` | **slurmcore.py** | musical note → ms helper (ADR-0020); accepts `1/N`, `1/N.`, `1/NT`, `1`, `2`. Returns 0.0 for invalid input. |
+| `def detect_slice_points(` | **slurmcore.py** | beat-grid + transient-snap slice-point engine (MAX RANDOM trimodal — ADR-0012). Now returns `(positions, effective_bpm)` so slurmify can use the same BPM for note→ms conversion (ADR-0020) |
+| `DEFAULT_BPM = 120.0` | **slurmcore.py** | the BPM fallback when neither detection nor override is available (used in MAX RANDOM and on librosa failure). Mirrored as the JS hint fallback in INIT_JS. |
 | `def apply_envelope(` | **slurmcore.py** | per-slice fade-in/out (anti-click) |
-| `def slurmify(` | **slurmcore.py** | main DSP pipeline (trim → stretch → slice → per-slice FX → concat → normalize); takes `(y, sr)` → returns `(ndarray, int)` — ADR-0016 |
+| `def slurmify(` | **slurmcore.py** | main DSP pipeline (trim → stretch → slice → per-slice FX → concat → normalize); takes `(y, sr)` → returns `(ndarray, int)` — ADR-0016. Accepts four optional `*_note` params that override the matching `*_ms` when non-empty (ADR-0020). |
 | `# FX DSP helpers` | **slurmcore.py** | `_fx_distortion`, `_fx_ring_mod`, `_fx_delay`, `_fx_phaser` — pure numpy (no IO, no Gradio) |
 | `def apply_fx(` | **slurmcore.py** | full FX chain (dist→ring→delay→phaser) — pure DSP, called by `burn_fx` in slurm_ui.py |
 | `INIT_JS = """` | **ui_assets.py** | the multi-line browser-side JS string (~500 lines) |
@@ -102,6 +104,7 @@ slurmio.py   — filesystem IO               (Phase 3 — ADR-0017)
 | `// ── Web Audio FX chain ──` | ui_assets.py | FX state, `_fxWalk`, `_fxCurve`, `_fxApply`, `_fxSetup` |
 | `// ── Audio-reactive viz loop` | ui_assets.py | rAF loop powering VU meter and acid halo |
 | `// ── MAX RANDOM hover gif ──` | ui_assets.py | INIT_JS that tags the MAX RANDOM radio label with `.slurm-max-option` |
+| `// ── Note-mode unit toggle` | ui_assets.py | INIT_JS for the per-slider ms⇄♪ toggle: `_slurmNoteToMs`, `_slurmMsToClosestNote`, `_slurmGetBpm`, the `_SLURM_UNIT_TARGETS` table, the document-level radio `change` listener, the localStorage save/load helpers, and the 250 ms hint refresh interval (ADR-0020). |
 | `// ── Allow ANY file type on the audio input ──` | ui_assets.py | INIT_JS strip-`accept` (legacy; real fix for video is ADR-0009) |
 | `CUSTOM_CSS = """` | **ui_assets.py** | the multi-line CSS string (default + acid + hardware skins) |
 | `_MAX_GIF_B64 = "` | ui_assets.py | base64 Max hover gif + CSS (right-slide). Must precede the CSS += f-string that embeds it. |
@@ -110,6 +113,9 @@ slurmio.py   — filesystem IO               (Phase 3 — ADR-0017)
 | `# ── Compact form controls` | ui_assets.py | radio chip rules, `.slurm-dropdown` (ADR-0014 §4), `.slurm-audio` |
 | `__version__ = "` | **slurm_ui.py** | canonical version string — also hard-coded in the slurm-tag div in build_ui() |
 | `_AUDIO_EXTS = frozenset` | **slurm_ui.py** | extensions routed straight to audio_in without ffmpeg extraction |
+| `_NOTE_CHOICES = [` | **slurm_ui.py** | shared dropdown list for the 4 musical-time `*_note` Dropdowns (ADR-0020). Mirrored in JS as `_SLURM_NOTE_LABELS`. |
+| `_UNIT_MODE_CHOICES = [` | **slurm_ui.py** | radio choices for the ms⇄♪ chip toggle. Order matters — "ms" first so it's the default. |
+| `def _swap_unit_mode(` | **slurm_ui.py** | visibility swap handler: returns `(slider_visible, dropdown_visible)` based on the active mode. Wired to each unit-mode radio's `.change`. |
 | `def burn_fx(` | **slurm_ui.py** | thin Gradio wrapper: validates path, loads with native SR, calls `apply_fx()`, writes output |
 | `def render_video(` | **slurm_ui.py** | YouTube MP4 export — auto-burns FX if FX-burned-output selected without prior burn; ADR-0006 |
 | `def _jumble_name(` | **slurm_ui.py** | filename-shuffle helper for the MP4 export |
@@ -196,6 +202,12 @@ _SKIN_NAMES              # whitelist: ['default', 'acid', 'hardware']
 #slurm-randomize-btn     # 🎲 randomize all button (Hoberman-Max hover via .slurm-max-popup)
 #slurm-reveal-btn        # 📁 reveal temp files button (Bob hover via .slurm-bob-option)
 #slurm-media-file        # universal upload gr.File (ADR-0009)
+#slurm-bpm-override      # BPM textbox — JS hint logic reads this for ♪→ms preview (ADR-0020)
+#slurm-stutter-skip-ms / -note / -mode  # stutter skip slider / dropdown / mode chip (ADR-0020)
+#slurm-trim-start-ms / -note / -mode    # beat trim start trio (ADR-0020)
+#slurm-trim-end-ms   / -note / -mode    # beat trim end trio (ADR-0020)
+#slurm-beat-gap-ms   / -note / -mode    # beat gap trio (ADR-0020)
+#slurm-unit-hint-stutter-skip / -trim-start / -trim-end / -beat-gap  # live ≈ hint divs (ADR-0020)
 ```
 
 ### CSS classes used as styling hooks (via `elem_classes=`)
@@ -211,6 +223,9 @@ _SKIN_NAMES              # whitelist: ['default', 'acid', 'hardware']
 .slurm-bob-option        # reveal-temp-files button (bottom-up Bob gif)
 .slurm-media-file        # universal upload gr.File styling hook
 .slurm-header-link       # the cat icon + SIENA SLURMER title (link to subvoyant.com)
+.slurm-unit-toggle       # compact ms⇄♪ radio chip pair under each musical slider (ADR-0020)
+.slurm-note-dropdown     # gr.Dropdown variant for note fractions; inherits .slurm-dropdown styling (ADR-0020)
+.slurm-unit-hint         # italic small caption "≈ NN ms @ BPM" under each toggle (ADR-0020)
 ```
 
 ---
@@ -347,6 +362,9 @@ the ffmpeg encode branch) **in `slurmio.py`**. Add it to the `output_format`
 | slurmio.py purity rule | [0017](docs/adr/0017-slurmio-filesystem-extraction.md) | slurmio.py must NEVER import gradio at the top level. One lazy `import gradio as _gr` inside `_reveal_temp_dir`'s except handler is the only allowed exception. |
 | slurmio.py session-temp side effects | [0017](docs/adr/0017-slurmio-filesystem-extraction.md) | Importing slurmio runs `tempfile.mkdtemp()` and `atexit.register()` once. Test code that imports slurmio will create a temp dir — this is intentional and matches prior app.py behaviour. |
 | slurm_ui.py purity rule | [0018](docs/adr/0018-slurm-ui-extraction.md) | slurm_ui.py must NEVER import from `app`. Allowed local imports: `slurmio`, `slurmcore`, `ui_assets` only. Importing `app` would create a circular dependency and crash the bundle. |
+| Single-BPM rule | [0020](docs/adr/0020-note-mode-time-parameters.md) | The BPM passed to `_note_to_ms` MUST equal the BPM `detect_slice_points` used. That's why detect_slice_points returns `(positions, bpm)` — DO NOT recompute BPM elsewhere in slurmify. |
+| Note-mode UI trios | [0020](docs/adr/0020-note-mode-time-parameters.md) | Each musical slider has 4 components (ms slider + note dropdown + mode radio + hint div) — adding/removing/reordering any breaks the visibility-swap handlers, the live-hint JS, the localStorage keys, AND the click-chain input ordering. Touch all 4 together. |
+| Note-mode JS / Python parity | [0020](docs/adr/0020-note-mode-time-parameters.md) | `_slurmNoteToMs` (JS in ui_assets.py) and `_note_to_ms` (Python in slurmcore.py) must produce identical results for the same input. If you change the grammar in one, change the other in the same commit — otherwise the hint and the slurm output disagree. |
 
 ---
 
@@ -418,4 +436,4 @@ the codebase has drifted from a state that was previously well-mapped.
 
 ---
 
-*Last updated: 2026-05-07 · v0.1.4 · Beat mask chip strip + JS→Python bridge fix (ADR-0019)*
+*Last updated: 2026-05-07 · v0.1.5 · Note-mode time parameters — per-slider ms ⇄ ♪ toggle (ADR-0020)*

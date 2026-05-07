@@ -1292,4 +1292,4 @@ with `ModuleNotFoundError`.
 
 ---
 
-*Last updated: 2026-05-07 · v0.1.4 · Beat mask chip strip + JS→Python bridge fix (ADR-0019)*
+*Last updated: 2026-05-07 · v0.1.5 · Note-mode time parameters — per-slider ms ⇄ ♪ toggle (ADR-0020)*

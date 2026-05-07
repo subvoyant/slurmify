@@ -749,6 +749,274 @@ INIT_JS = """
         _slurmStripAccept();
         if (++_stripTries > 80) clearInterval(_stripIv);
     }, 250);
+
+    // ── Note-mode unit toggle: live hints + localStorage persistence (ADR-0020)
+    //
+    // Each musical slider in slurm_ui.py is paired with a note-fraction
+    // dropdown and a small radio-chip toggle ("ms ⇄ ♪").  Python handles
+    // the visibility swap; this block handles the polish layer:
+    //   1. localStorage persistence — remember each toggle's mode across
+    //      reloads (mirrors the skin-switcher pattern in §"Skin switcher").
+    //   2. Live hint text — italic "≈ NN ms @ BPM" / "≈ 1/N @ BPM" line
+    //      under each slider, recomputed on every drag / dropdown change.
+    //
+    // The hint's BPM source is (in order):
+    //   a. The value typed in the "BPM override" textbox (#slurm-bpm-override)
+    //   b. 120 (matching DEFAULT_BPM in slurmcore.py — see ADR-0020).
+    //
+    // We do NOT have access to librosa-detected BPM here (detection runs
+    // server-side at slurmify time), so the hint is approximate when the
+    // user hasn't set an override.  This is documented in the slider info
+    // text and in ADR-0020 §bpm-source-asymmetry.
+
+    // Mirror of _note_to_ms() in slurmcore.py.  Keeps the UI's live preview
+    // numerically consistent with what the Python pipeline will produce.
+    // Grammar: "1/N", "1/N.", "1/NT", "1", "2".  Returns 0 for invalid.
+    function _slurmNoteToMs(note, bpm) {
+        if (!note || typeof note !== 'string' || bpm <= 0) return 0;
+        var s = note.trim();
+        if (!s || s.toLowerCase() === 'off') return 0;
+        var dotted = false, triplet = false;
+        if (s.charAt(s.length - 1) === '.') { dotted = true; s = s.slice(0, -1); }
+        else if (s.charAt(s.length - 1) === 'T') { triplet = true; s = s.slice(0, -1); }
+        var value;
+        if (s.indexOf('/') !== -1) {
+            var parts = s.split('/');
+            var num = parseFloat(parts[0]);
+            var den = parseFloat(parts[1]);
+            if (!isFinite(num) || !isFinite(den) || den === 0) return 0;
+            value = num / den;
+        } else {
+            value = parseFloat(s);
+            if (!isFinite(value)) return 0;
+        }
+        var beats = value * 4;
+        if (dotted) beats *= 1.5;
+        else if (triplet) beats *= 2 / 3;
+        return beats * (60000 / bpm);
+    }
+
+    // Reverse direction: find the note label whose ms value at this BPM is
+    // CLOSEST to the slider's ms value.  Used for the "≈ 1/N" hint shown
+    // when a slider is in ms mode.  Returns "" for non-positive ms.
+    var _SLURM_NOTE_LABELS = [
+        '1/64','1/32',
+        '1/16T','1/16','1/16.',
+        '1/8T','1/8','1/8.',
+        '1/4T','1/4','1/4.',
+        '1/2','1','2'
+    ];
+    function _slurmMsToClosestNote(ms, bpm) {
+        if (!ms || ms <= 0 || bpm <= 0) return '';
+        var bestNote = '';
+        var bestDelta = Infinity;
+        for (var i = 0; i < _SLURM_NOTE_LABELS.length; i++) {
+            var nm = _SLURM_NOTE_LABELS[i];
+            var noteMs = _slurmNoteToMs(nm, bpm);
+            if (noteMs <= 0) continue;
+            var delta = Math.abs(noteMs - ms);
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                bestNote = nm;
+            }
+        }
+        return bestNote;
+    }
+
+    // Read the BPM override textbox; fallback to 120 if empty / invalid.
+    function _slurmGetBpm() {
+        var wrap = document.getElementById('slurm-bpm-override');
+        if (wrap) {
+            var inp = wrap.querySelector('input, textarea');
+            if (inp) {
+                var v = parseFloat((inp.value || '').trim());
+                if (isFinite(v) && v > 0) return v;
+            }
+        }
+        return 120;   // matches DEFAULT_BPM in slurmcore.py
+    }
+
+    // Targets — one entry per musical slider.  Stable elem_ids set in
+    // slurm_ui.py.  Add a new entry here if you wire up a fifth musical
+    // parameter; don't forget the matching CSS hint span.
+    var _SLURM_UNIT_TARGETS = [
+        { tag: 'stutter_skip',
+          msId:   'slurm-stutter-skip-ms',
+          noteId: 'slurm-stutter-skip-note',
+          modeId: 'slurm-stutter-skip-mode',
+          hintId: 'slurm-unit-hint-stutter-skip' },
+        { tag: 'trim_start',
+          msId:   'slurm-trim-start-ms',
+          noteId: 'slurm-trim-start-note',
+          modeId: 'slurm-trim-start-mode',
+          hintId: 'slurm-unit-hint-trim-start' },
+        { tag: 'trim_end',
+          msId:   'slurm-trim-end-ms',
+          noteId: 'slurm-trim-end-note',
+          modeId: 'slurm-trim-end-mode',
+          hintId: 'slurm-unit-hint-trim-end' },
+        { tag: 'beat_gap',
+          msId:   'slurm-beat-gap-ms',
+          noteId: 'slurm-beat-gap-note',
+          modeId: 'slurm-beat-gap-mode',
+          hintId: 'slurm-unit-hint-beat-gap' },
+    ];
+
+    // Read the active mode for one target by querying the mode radio's
+    // currently-checked input.  Defaults to "ms" if the radio isn't found
+    // (which happens during the brief boot window before Gradio renders).
+    function _slurmReadMode(target) {
+        var wrap = document.getElementById(target.modeId);
+        if (!wrap) return 'ms';
+        var checked = wrap.querySelector('input[type="radio"]:checked');
+        if (!checked) return 'ms';
+        return checked.value || 'ms';
+    }
+
+    // Read the slider's ms value (the <input type="range"> Gradio renders
+    // inside the wrapper div).
+    function _slurmReadSliderMs(target) {
+        var wrap = document.getElementById(target.msId);
+        if (!wrap) return 0;
+        var input = wrap.querySelector('input[type="range"]')
+                 || wrap.querySelector('input[type="number"]');
+        return input ? (parseFloat(input.value) || 0) : 0;
+    }
+
+    // Read the dropdown's selected note string.  Gradio v6 dropdowns render
+    // a custom component with an <input> reflecting the visible text and a
+    // hidden <select> for option binding.  Reading input.value works in
+    // every Gradio v6 release we have shipped against (last verified v6.x).
+    function _slurmReadDropdownNote(target) {
+        var wrap = document.getElementById(target.noteId);
+        if (!wrap) return '';
+        var input = wrap.querySelector('input');
+        return input ? (input.value || '').trim() : '';
+    }
+
+    // Update one hint <div> based on the active mode + value.  In ms mode
+    // we show "≈ 1/N @ BPM" (closest note); in ♪ mode we show
+    // "≈ NN ms @ BPM" (forward conversion).  Empty / zero values render
+    // as "off" so the user can see at a glance that the slider is inert.
+    function _slurmRefreshHint(target) {
+        var hint = document.getElementById(target.hintId);
+        if (!hint) return;
+        var bpm  = _slurmGetBpm();
+        var mode = _slurmReadMode(target);
+        var bpmTag = ' @ ' + bpm.toFixed(0) + ' BPM';
+        if (mode === '♪') {
+            var note = _slurmReadDropdownNote(target);
+            var ms   = _slurmNoteToMs(note, bpm);
+            if (ms > 0) {
+                // Show 0 decimals for ≥10 ms, 1 decimal below for precision.
+                var msFmt = (ms >= 10) ? ms.toFixed(0) : ms.toFixed(1);
+                hint.textContent = '≈ ' + msFmt + ' ms' + bpmTag;
+            } else {
+                hint.textContent = 'off';
+            }
+        } else {
+            var msv  = _slurmReadSliderMs(target);
+            if (msv > 0) {
+                var nearest = _slurmMsToClosestNote(msv, bpm);
+                hint.textContent = nearest
+                    ? ('≈ ' + nearest + bpmTag)
+                    : ('≈ ' + msv.toFixed(0) + ' ms' + bpmTag);
+            } else {
+                hint.textContent = 'off';
+            }
+        }
+    }
+
+    // localStorage persistence: when a mode radio changes, save the new
+    // value under a per-target key.  On startup, restore the saved mode by
+    // programmatically clicking the matching radio input (which fires the
+    // change event and triggers the visibility-swap handler in slurm_ui.py).
+    function _slurmSaveMode(target, mode) {
+        try { localStorage.setItem('slurm_unit_' + target.tag, mode); } catch(e) {}
+    }
+    function _slurmLoadMode(target) {
+        try {
+            var v = localStorage.getItem('slurm_unit_' + target.tag);
+            if (v === '♪' || v === 'ms') return v;
+        } catch(e) {}
+        return null;
+    }
+    function _slurmApplySavedMode(target) {
+        var saved = _slurmLoadMode(target);
+        if (!saved || saved === 'ms') return;   // 'ms' is already the default
+        var wrap = document.getElementById(target.modeId);
+        if (!wrap) return false;
+        // Find the radio input whose value matches the saved mode and click it.
+        // Use programmatic click rather than setting checked= so Gradio's
+        // Svelte runtime sees the change and fires its bound handler (which
+        // does the visibility swap and routes the value back into Python state).
+        var inputs = wrap.querySelectorAll('input[type="radio"]');
+        for (var i = 0; i < inputs.length; i++) {
+            if (inputs[i].value === saved) {
+                if (!inputs[i].checked) {
+                    inputs[i].click();
+                    _dbg('unit toggle ' + target.tag + ' restored from localStorage → ' + saved);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Wire change-listeners on the mode radios so localStorage stays in sync.
+    // Gradio re-renders these on certain state changes, so we use a delegated
+    // listener at document level rather than direct addEventListener which
+    // would lose its target after a re-render.
+    document.addEventListener('change', function(e) {
+        if (!e.target || e.target.type !== 'radio') return;
+        for (var i = 0; i < _SLURM_UNIT_TARGETS.length; i++) {
+            var t = _SLURM_UNIT_TARGETS[i];
+            var wrap = document.getElementById(t.modeId);
+            if (wrap && wrap.contains(e.target)) {
+                _slurmSaveMode(t, e.target.value);
+                _slurmRefreshHint(t);
+                return;
+            }
+        }
+    });
+
+    // Restore saved modes once Gradio has rendered the radios.  Poll until
+    // we have applied every saved value, then stop.  Each successful apply
+    // also flushes the next hint refresh on the next interval tick.
+    var _slurmModeApplied = {};
+    var _slurmModeTries   = 0;
+    var _slurmModeIv = setInterval(function() {
+        var allDone = true;
+        for (var i = 0; i < _SLURM_UNIT_TARGETS.length; i++) {
+            var t = _SLURM_UNIT_TARGETS[i];
+            if (_slurmModeApplied[t.tag]) continue;
+            // If there's no saved mode (or it's the default), mark done.
+            var saved = _slurmLoadMode(t);
+            if (!saved || saved === 'ms') {
+                _slurmModeApplied[t.tag] = true;
+                continue;
+            }
+            // Try to apply; if the radio wrap isn't rendered yet, retry.
+            if (_slurmApplySavedMode(t)) {
+                _slurmModeApplied[t.tag] = true;
+            } else {
+                allDone = false;
+            }
+        }
+        if (allDone || ++_slurmModeTries > 80) clearInterval(_slurmModeIv);  // ~20 s cap
+    }, 250);
+
+    // Refresh all hints regularly.  Polling at 250 ms is plenty — the user
+    // can't perceive a quarter-second lag on a hint, and the cost is
+    // negligible (four DOM reads + four textContent writes per tick).
+    // We also run an immediate first pass so hints aren't blank on load.
+    function _slurmRefreshAllHints() {
+        for (var i = 0; i < _SLURM_UNIT_TARGETS.length; i++) {
+            _slurmRefreshHint(_SLURM_UNIT_TARGETS[i]);
+        }
+    }
+    setInterval(_slurmRefreshAllHints, 250);
+    setTimeout(_slurmRefreshAllHints, 100);  // first pass ASAP after Gradio mounts
 })();
 """
 
@@ -2133,6 +2401,130 @@ body[data-skin="hardware"] .slurm-bar-chip-off {
     background: #060606;
     border-color: #1a2a1a;
     color: #1a2a1a;
+}
+
+/* ── Note-mode unit toggle (ADR-0020) ─────────────────────────────────────
+   Each musical slider is paired with:
+     • a <div class="slurm-unit-toggle"> wrapping a 2-option Gradio Radio
+       ("ms" / "♪").  We compress Gradio's default fieldset+labels into a
+       compact inline chip pair sitting just under the slider.
+     • a <div class="slurm-unit-hint"> rendered below the toggle by an
+       inline gr.HTML.  INIT_JS writes "≈ NN ms @ BPM" or "≈ 1/N @ BPM"
+       text into it as the user drags the slider, picks a note, or types
+       a new BPM override.
+
+   The toggle's chip styling intentionally mirrors .slurm-bar-chip so the
+   unit toggle and the beat-mask chip strip feel like a coherent control
+   family rather than two unrelated widgets.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Toggle wrapper — squeeze out Gradio's default block padding/margins so
+   the chips sit snugly under the slider rather than floating in their own
+   container card. */
+.slurm-unit-toggle {
+    margin-top: -2px !important;
+    margin-bottom: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+}
+.slurm-unit-toggle > .wrap,
+.slurm-unit-toggle > div {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}
+/* The radio fieldset Gradio renders inside.  Force it inline-flex so the
+   two options sit side by side as chip buttons. */
+.slurm-unit-toggle fieldset,
+.slurm-unit-toggle .wrap-inner {
+    display: inline-flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    gap: 4px !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+/* Hide the actual <input type="radio"> circles — we only show the labels. */
+.slurm-unit-toggle input[type="radio"] {
+    position: absolute !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+/* The <label> wraps each option.  Style it as a chip — same visual family
+   as .slurm-bar-chip but smaller for the inline placement. */
+.slurm-unit-toggle label {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    min-width: 30px !important;
+    height: 22px !important;
+    padding: 0 8px !important;
+    margin: 0 !important;
+    font-size: 0.7rem !important;
+    line-height: 1 !important;
+    border-radius: 4px !important;
+    border: 1px solid var(--slurm-border) !important;
+    background: var(--slurm-surface) !important;
+    color: #6a6060 !important;
+    cursor: pointer !important;
+    user-select: none !important;
+    transition: background 0.12s, color 0.12s, border-color 0.12s !important;
+}
+.slurm-unit-toggle label:hover {
+    background: var(--slurm-surface2) !important;
+    color: #cdc6c6 !important;
+}
+/* Selected chip: the cyan accent matches .slurm-bar-chip-on. */
+.slurm-unit-toggle label:has(input:checked),
+.slurm-unit-toggle input:checked + label,
+.slurm-unit-toggle label.selected {
+    background: #0d2730 !important;
+    color: var(--slurm-cyan) !important;
+    border-color: var(--slurm-cyan) !important;
+}
+
+/* Live hint span — italic small caption.  Sits flush below the toggle. */
+.slurm-unit-hint {
+    font-size: 0.62rem;
+    color: #5a5252;
+    font-style: italic;
+    letter-spacing: 0.02em;
+    margin-top: 2px;
+    margin-bottom: 4px;
+    padding-left: 2px;
+    min-height: 0.85rem;   /* reserve a row so layout doesn't jump on first paint */
+    text-transform: lowercase;
+}
+
+/* Acid skin: green-tinted hint and chip glow. */
+body[data-skin="acid"] .slurm-unit-toggle label:has(input:checked),
+body[data-skin="acid"] .slurm-unit-toggle input:checked + label {
+    background: #051a12 !important;
+    color: #00ffc8 !important;
+    border-color: #00ffc8 !important;
+    box-shadow: 0 0 6px rgba(0,255,200,0.25) !important;
+}
+body[data-skin="acid"] .slurm-unit-hint {
+    color: #2a6a4a;
+}
+
+/* Hardware skin: LED-amber selected chip; monospace hint. */
+body[data-skin="hardware"] .slurm-unit-toggle label:has(input:checked),
+body[data-skin="hardware"] .slurm-unit-toggle input:checked + label {
+    background: #1a1500 !important;
+    color: #ffb838 !important;
+    border-color: #ffb838 !important;
+    box-shadow: 0 0 5px rgba(255,184,56,0.35) !important;
+    font-family: monospace !important;
+}
+body[data-skin="hardware"] .slurm-unit-hint {
+    color: #6a5a3a;
+    font-family: monospace;
 }
 """
 

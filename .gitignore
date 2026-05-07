@@ -54,3 +54,7 @@ notarize_creds.sh
 .vscode/
 .idea/
 *.swp
+
+# Graphics source — large binaries; reference gifs are base64-inlined into ui_assets.py
+graphic/
+DMG_builds/
