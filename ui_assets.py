@@ -592,6 +592,138 @@ INIT_JS = """
         if (++_maxTries > 80) clearInterval(_maxIv);  // ~20s of retries
     }, 250);
 
+    // ── Beat mask chip strip ──────────────────────────────────────────────
+    //
+    // _slurmBuildBeatMask(resolution) renders N toggle-chip buttons into the
+    // container div #slurm-beat-mask, where N is the number of note-subdivisions
+    // per bar for the selected resolution:
+    //
+    //   1/1  → 1 chip   (one whole note = one bar)
+    //   1/2  → 2 chips  (two half notes per bar)
+    //   1/4  → 4 chips  (four quarter notes = beats 1–4)
+    //   1/8  → 8 chips
+    //   1/16 → 16 chips
+    //
+    // For 1/32, 1/64, 1/128, and MAX RANDOM the strip is hidden — the chip
+    // count would be too dense (32+ per bar) and MAX RANDOM has no fixed grid.
+    //
+    // Each chip is a <button> that toggles between "on" (beat included) and
+    // "off" (beat dropped from the output).  Clicking a chip updates the JS
+    // global window._slurmBeatMask (a boolean array snapshot).  The Go
+    // button's first chain step reads this global and passes it to Python via
+    // Gradio's own output mechanism — NOT by writing to a DOM <textarea>.
+    // (Writing to a Gradio 5 Svelte component's <textarea> from JS and
+    // dispatching an 'input' event does NOT update Svelte's internal state,
+    // so the textbox always reported "" to Python.  Using fn=None + outputs=
+    // routes through Gradio's frontend→backend sync and is reliable.)
+    //
+    // All chips start "on" (all beats active) whenever the resolution changes
+    // or the page first loads, so the default behaviour is unchanged.
+
+    // _beatMask: current boolean array (index == note position in bar).
+    // Chip clicks toggle entries.  The Go button's JS step reads this global
+    // at fire-time via Gradio's own output path — much more reliable than
+    // trying to update a Gradio Textbox's DOM value from outside the component
+    // (which requires React's native-setter trick and breaks on Gradio 5's
+    // Svelte runtime).
+    var _beatMask = [];
+    window._slurmBeatMask = _beatMask;   // expose immediately; updated on every change
+
+    function _slurmBuildBeatMask(resolution) {
+        var wrap = document.getElementById('slurm-beat-mask');
+        if (!wrap) {
+            _dbg('beat mask: #slurm-beat-mask container not found');
+            return;
+        }
+
+        // Resolutions that have too many subdivisions to display a useful chip
+        // strip, or that don't use a fixed beat grid.
+        var hidden = (resolution === 'MAX RANDOM' ||
+                      resolution === '1/32'       ||
+                      resolution === '1/64'       ||
+                      resolution === '1/128');
+        if (hidden) {
+            wrap.style.display = 'none';
+            // Reset mask to "all on" so that switching back to a visible
+            // resolution doesn't carry over a stale masked state.
+            _beatMask.length = 0;
+            window._slurmBeatMask = _beatMask;
+            return;
+        }
+
+        // Map resolution string → number of chips.
+        var countMap = { '1/1': 1, '1/2': 2, '1/4': 4, '1/8': 8, '1/16': 16 };
+        var n = countMap[resolution] || 4;  // default 4 if something unexpected comes in
+
+        // Always reset to all-on when resolution changes so the strip is fresh.
+        _beatMask.length = 0;
+        for (var k = 0; k < n; k++) _beatMask.push(true);
+        window._slurmBeatMask = _beatMask.slice();   // expose a snapshot
+
+        // Build the chip buttons.
+        wrap.innerHTML = '';
+
+        // Label above the strip.
+        var lbl = document.createElement('div');
+        lbl.className = 'slurm-beat-mask-label';
+        lbl.textContent = 'beat mask · ' + resolution + ' · click to drop a beat';
+        wrap.appendChild(lbl);
+
+        // Chip row.
+        var row = document.createElement('div');
+        row.className = 'slurm-beat-mask-row';
+
+        for (var i = 0; i < n; i++) {
+            (function(idx) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'slurm-bar-chip slurm-bar-chip-on';
+                // Beat numbering: 1-based with circled digit glyphs (① through ⑯).
+                var circled = ['①','②','③','④',
+                               '⑤','⑥','⑦','⑧',
+                               '⑨','⑩','⑪','⑫',
+                               '⑬','⑭','⑮','⑯'];
+                btn.textContent = circled[idx] || (idx + 1);
+                btn.title = 'beat ' + (idx + 1) + ' of ' + n
+                          + ' (' + resolution + ') — click to toggle';
+
+                btn.addEventListener('click', function() {
+                    _beatMask[idx] = !_beatMask[idx];
+                    window._slurmBeatMask = _beatMask.slice();   // update exposed snapshot
+                    if (_beatMask[idx]) {
+                        btn.className = 'slurm-bar-chip slurm-bar-chip-on';
+                    } else {
+                        btn.className = 'slurm-bar-chip slurm-bar-chip-off';
+                    }
+                    _dbg('beat mask: beat ' + (idx+1) + ' → ' + _beatMask[idx]
+                         + '  mask=' + JSON.stringify(window._slurmBeatMask));
+                });
+                row.appendChild(btn);
+            })(i);
+        }
+
+        wrap.appendChild(row);
+        wrap.style.display = 'block';
+        _dbg('beat mask: built ' + n + ' chips for resolution ' + resolution);
+    }
+
+    // Build the initial strip based on the default resolution (1/16).
+    // Retry on a short poll because Gradio may not have rendered the container
+    // div yet at the time this IIFE first runs.
+    var _maskInitTries = 0;
+    var _maskInitIv = setInterval(function() {
+        var wrap = document.getElementById('slurm-beat-mask');
+        if (wrap) {
+            clearInterval(_maskInitIv);
+            _slurmBuildBeatMask('1/16');   // matches the default resolution radio value
+            _dbg('beat mask: initial strip built');
+        }
+        if (++_maskInitTries > 40) clearInterval(_maskInitIv);  // give up after ~10 s
+    }, 250);
+
+    // Expose so the resolution.change handler in slurm_ui.py can call it.
+    window.slurmBuildBeatMask = _slurmBuildBeatMask;
+
     // ── Allow ANY file type on the audio input ────────────────────────────
     // Gradio's gr.Audio renders an <input type="file"> with accept="audio/*"
     // which causes the OS picker to filter out video/media files. We strip
@@ -645,6 +777,7 @@ INIT_JS = """
 #   _HOBERMAN_GIF_B64 defined here
 #   Block 4  (CUSTOM_CSS += f"""...""") — Hoberman-Max hover animation
 #   Block 5  (CUSTOM_CSS += """...""")  — compact chip-row controls
+#   Block 6  (inside Block 5 closing)  — bar mask chip strip (.slurm-bar-chip-on/off)
 # ═══════════════════════════════════════════════════════════════════════════════
 CUSTOM_CSS = """
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1873,6 +2006,112 @@ body[data-skin="default"] .gradio-container .gap.column,
 body[data-skin="default"] .gradio-container .form > .form,
 body[data-skin="default"] .gradio-container [class*="column"] > .gap {
     gap: 4px !important;
+}
+
+/* ── Beat mask chip strip ─────────────────────────────────────────────────
+   #slurm-beat-mask is a plain <div> injected by gr.HTML() immediately below
+   the resolution Radio component.  _slurmBuildBeatMask() in INIT_JS writes
+   the chip buttons into it dynamically whenever the resolution changes.
+
+   Layout:
+     .slurm-beat-mask-label  — small descriptor line above the chip row
+     .slurm-beat-mask-row    — flex row of .slurm-bar-chip buttons
+     .slurm-bar-chip-on     — beat is ACTIVE (cyan, filled)
+     .slurm-bar-chip-off    — beat is DROPPED (dark, dashed border)
+   ────────────────────────────────────────────────────────────────────── */
+#slurm-beat-mask {
+    margin-top: 6px;
+    margin-bottom: 2px;
+    padding: 6px 8px;
+    background: #111010;
+    border: 1px solid #1e1a1b;
+    border-radius: 6px;
+}
+
+.slurm-beat-mask-label {
+    font-size: 0.62rem;
+    color: #5a5252;
+    letter-spacing: 0.03em;
+    margin-bottom: 5px;
+    text-transform: lowercase;
+}
+
+.slurm-beat-mask-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+/* Base chip button — shared properties */
+.slurm-bar-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 4px;
+    font-size: 0.85rem;        /* circled digit glyphs are a bit larger */
+    line-height: 1;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s,
+                box-shadow 0.12s;
+    box-shadow: none;
+    outline: none;
+    user-select: none;
+    /* At 16 chips (1/16) on a narrow column, chips wrap to 2 rows —
+       flex-wrap on the parent row handles this gracefully. */
+}
+
+/* ON state: beat is active — filled cyan */
+.slurm-bar-chip-on {
+    background: #0d2730;
+    color: #00b9e1;
+    border: 1px solid #00b9e1;
+}
+.slurm-bar-chip-on:hover {
+    background: #103540;
+    border-color: #33c9e8;
+    color: #33c9e8;
+    box-shadow: 0 0 6px rgba(0,185,225,0.25);
+}
+
+/* OFF state: beat is dropped — dark, dashed border to signal "skip" */
+.slurm-bar-chip-off {
+    background: #100d0d;
+    color: #3a3232;
+    border: 1px dashed #2a2323;
+}
+.slurm-bar-chip-off:hover {
+    background: #161314;
+    color: #6a5f5f;
+    border-color: #4a3f3f;
+}
+
+/* Acid skin: glow on selected chips */
+body[data-skin="acid"] .slurm-bar-chip-on {
+    box-shadow: 0 0 8px rgba(0,255,200,0.3);
+    border-color: #00ffc8;
+    color: #00ffc8;
+    background: #051a12;
+}
+body[data-skin="acid"] .slurm-bar-chip-off {
+    border-color: #1a1a0a;
+    color: #2a2a1a;
+}
+
+/* Hardware skin: LED-style chips */
+body[data-skin="hardware"] .slurm-bar-chip-on {
+    background: #001800;
+    border-color: #00c040;
+    color: #00c040;
+    box-shadow: 0 0 5px rgba(0,192,64,0.4);
+    font-family: monospace;
+}
+body[data-skin="hardware"] .slurm-bar-chip-off {
+    background: #060606;
+    border-color: #1a2a1a;
+    color: #1a2a1a;
 }
 """
 

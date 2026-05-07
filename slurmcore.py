@@ -485,6 +485,7 @@ def slurmify(
     start_sec: float = 0.0,
     end_sec: float = 0.0,
     seed: int | None = None,
+    bar_mask: list[bool] | None = None,
     _progress=None,
 ) -> tuple[np.ndarray, int]:
     """Run the full slurm transformation on an audio array.
@@ -558,6 +559,17 @@ def slurmify(
         Trim audio to this position.  0 = use full file.
     seed : int or None
         Random seed.  Set for reproducible output; None = fresh randomness.
+    bar_mask : list[bool] or None
+        Per-beat dropout pattern within each bar.  When set, slice i is kept
+        only if ``bar_mask[i % len(bar_mask)]`` is True.  This lets the user
+        toggle individual beat positions in the bar on/off — e.g., at 1/4
+        resolution with bar_mask=[True, False, True, False], only beats 1 and
+        3 of every bar survive in the output.
+
+        The UI sends one bool per chip button; the chip count matches the
+        number of note-subdivisions per bar for the active resolution.
+
+        ``None`` or an all-True list = keep everything (default behaviour).
     _progress : callable or None
         Optional progress callback: _progress(fraction_0_1, desc="...").
         Passed in by the Gradio UI so the user sees a progress bar.
@@ -643,6 +655,31 @@ def slurmify(
     # Tail: any audio after the last slice point.
     if slice_points[-1] < len(y):
         slices.append(y[int(slice_points[-1]):])
+
+    # ── Step 3b: bar mask filtering (optional) ──────────────────────────────
+    # The bar mask is a list of N booleans where N = number of note-
+    # subdivisions per bar at the active resolution (e.g. 4 bools for 1/4,
+    # 8 for 1/8, 16 for 1/16).  Slice i is retained iff:
+    #
+    #     bar_mask[i % N]  is True
+    #
+    # This produces a repeating per-bar dropout pattern: every occurrence of
+    # beat 2 across the whole file can be silenced by setting bar_mask[1]=False
+    # at 1/4 resolution.
+    #
+    # Skip the filtering entirely when:
+    #   • bar_mask is None (feature not engaged — default)
+    #   • bar_mask is all-True (all beats on = no change)
+    # This avoids any performance overhead on the common "no mask" path.
+    if bar_mask and not all(bar_mask):
+        n_mask = len(bar_mask)
+        slices = [s for i, s in enumerate(slices) if bar_mask[i % n_mask]]
+        if not slices:
+            # Every slice was masked out (user toggled all chips off).
+            # Return 1 sample of silence — avoids a div-by-zero in the
+            # normalizer and keeps the return contract (ndarray, int) valid.
+            _prog(1.0, "Done")
+            return np.zeros(1, dtype=np.float32), sr
 
     _prog(0.60, "Processing slices…")
     # ── Step 4: per-slice transformations ───────────────────────────────────

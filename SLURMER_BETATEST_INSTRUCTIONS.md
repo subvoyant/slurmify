@@ -1,6 +1,17 @@
-# Subvoyant SIENA Slurmer v0.1.3 — Beta Test Notes
+# Subvoyant SIENA Slurmer v0.1.4 — Beta Test Notes
 
 Hi Person — thanks for testing the SIENA Slurmer. Here's everything you need to know.
+
+---
+
+## What's new in 0.1.4
+
+A rhythmic control release: you can now selectively drop individual beat positions from the slurmify output — e.g. keep beats 1 and 3 of every bar, drop 2 and 4 — using a chip strip that appears below the resolution picker.
+
+- **Beat mask chip strip.** A row of toggle chips appears for resolutions up to 1/16 (1, 2, 4, 8, or 16 chips depending on resolution). Labeled ①–⑯. Click a chip to drop that beat position from the output; click again to restore it. All chips on = no filtering, same output as before. The strip resets to all-on whenever you change resolution. Hidden for 1/32 and above (too dense to be useful) and for MAX RANDOM (no fixed grid to mask).
+- **Beat mask is zero-overhead when not used.** If all chips are on, the filter step is skipped entirely — no performance impact on the default path.
+- **Beat mask is preserved in the YouTube MP4 export.** The `PATCH=` JSON in the video description includes `core.bar_mask` so the pattern is fully reproducible.
+- **Fix: beat mask chip strip now updates when resolution changes after a slurmify run.** Previously the chips would freeze at the last-built chip count once any slurmify had completed. Now the strip reliably rebuilds whenever you change the resolution.
 
 ---
 
@@ -85,7 +96,7 @@ A big release. Everything that came after 0.0.7 (which Bob and Max have already)
 
 ## Installing
 
-1. Open the **SubvoyantSIENASlurmer-0.1.3.dmg** file you received
+1. Open the **SubvoyantSIENASlurmer-0.1.4.dmg** file you received
 2. Drag **Subvoyant SIENA Slurmer** into your **Applications** folder
 3. Eject the DMG (drag it to Trash, or right-click → Eject)
 
@@ -170,4 +181,4 @@ Close the browser tab, then quit Slurmify from the Dock (right-click → Quit) o
 
 ---
 
-*Subvoyant · Built with Python + Gradio · Runs 100% locally · v0.1.3 alpha*
+*Subvoyant · Built with Python + Gradio · Runs 100% locally · v0.1.4 alpha*

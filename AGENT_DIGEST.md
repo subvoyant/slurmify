@@ -22,7 +22,7 @@ audio. Distributed as a code-signed, notarized macOS `.app` inside a
 `.dmg`.
 
 Current version: see `__version__` in `slurm_ui.py` and the matching
-`<div class="slurm-tag">` in `build_ui()` (truth copy is `build.sh`'s `VERSION="0.1.3"`).
+`<div class="slurm-tag">` in `build_ui()` (truth copy is `build.sh`'s `VERSION="0.1.4"`).
 
 ---
 
@@ -418,4 +418,4 @@ the codebase has drifted from a state that was previously well-mapped.
 
 ---
 
-*Last updated: 2026-05-06 · v0.1.3 · Phase-4 modularisation complete (slurm_ui.py — ADR-0018)*
+*Last updated: 2026-05-07 · v0.1.4 · Beat mask chip strip + JS→Python bridge fix (ADR-0019)*

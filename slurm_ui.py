@@ -99,7 +99,7 @@ from ui_assets import _ICON_TAG
 # in the MP4 metadata.  The slurm-tag <div> in build_ui() hard-codes it too
 # (Gradio HTML is a string, not an expression) — keep both in sync when
 # bumping the version.  Also update build.sh and slurmify.spec.
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -317,6 +317,7 @@ def render_video(
     stutter_skip_ms, stutter_max_reps, stutter_spread,
     bpm_override_text,
     seed_text,
+    bar_mask_json,
     # FX params (for metadata blob) ────────────────────────────────────────────
     dist_drive, ring_freq, ring_depth,
     delay_time, delay_fb, delay_mix,
@@ -446,6 +447,11 @@ def render_video(
             "bpm_override":          (float(bpm_override_text)
                                       if bpm_override_text and str(bpm_override_text).strip()
                                       else None),
+            # bar_mask is stored as the raw JSON string (e.g. "[true,false,true,true]")
+            # so the PATCH blob is round-trippable without losing fidelity.
+            "bar_mask":              (bar_mask_json.strip()
+                                      if bar_mask_json and str(bar_mask_json).strip()
+                                      else None),
         },
         "fx": {
             "dist_drive":  float(dist_drive  or 0),
@@ -550,6 +556,7 @@ def process(
     start_sec,
     end_sec,
     seed_text,
+    bar_mask_json: str = "",
     progress=gr.Progress(),
 ):
     """Main Gradio event handler: slurmify the uploaded audio file.
@@ -594,6 +601,23 @@ def process(
             except (ValueError, TypeError):
                 bpm_ov = None
 
+        # Parse the bar mask JSON string sent from the browser chip strip.
+        # The JS writes a value like "[true,false,true,true]" into the hidden
+        # textbox.  We parse it here and pass it to slurmify().
+        # An empty string, all-True, or malformed JSON all resolve to None,
+        # which tells slurmify() to keep everything (default behaviour).
+        bar_mask = None
+        if bar_mask_json and str(bar_mask_json).strip():
+            try:
+                arr = json.loads(bar_mask_json)
+                if isinstance(arr, list) and len(arr) > 0:
+                    bools = [bool(x) for x in arr]
+                    # All-True = no masking — treat same as None for efficiency.
+                    if not all(bools):
+                        bar_mask = bools
+            except (json.JSONDecodeError, TypeError, ValueError):
+                bar_mask = None   # malformed JSON from the browser → ignore
+
         # Load the audio into a numpy array.  slurmcore.slurmify is a pure DSP
         # function that takes arrays in and arrays out — it never touches the
         # filesystem.  All IO (load + write) happens here.
@@ -617,6 +641,7 @@ def process(
             start_sec=float(start_sec or 0),
             end_sec=float(end_sec or 0),
             seed=seed,
+            bar_mask=bar_mask,
             _progress=progress,
         )
         return _write_audio(y_out, sr_out, output_format)
@@ -677,7 +702,7 @@ def build_ui() -> gr.Blocks:
               """ + _ICON_TAG + """
               <div class="slurm-header-text">
                 <h1 class="slurm-title"><a href="https://www.subvoyant.com" target="_blank" rel="noopener noreferrer" class="slurm-header-link">SIENA SLURMER</a></h1>
-                <div class="slurm-tag">subvoyant · chopped · sped-up · transient-sliced · v0.1.3</div>
+                <div class="slurm-tag">subvoyant · chopped · sped-up · transient-sliced · v0.1.4</div>
               </div>
               <div class="slurm-skin-wrap">
                 <label for="slurm-skin-picker">skin</label>
@@ -789,6 +814,26 @@ def build_ui() -> gr.Blocks:
                     info=("grid spacing for slices, in note values · "
                           "MAX RANDOM bypasses the grid (auto-checks shuffle)"),
                 )
+
+                # ── Beat mask container (populated by _slurmBuildBeatMask in JS) ──
+                # A plain HTML div that INIT_JS writes chip buttons into whenever
+                # the resolution changes.  This keeps the Gradio layout static
+                # while the chip contents are dynamic.
+                gr.HTML('<div id="slurm-beat-mask"></div>')
+
+                # Hidden textbox that carries the current beat-mask boolean array
+                # from the browser to Python.  At Go-button-click time a JS-only
+                # first step reads window._slurmBeatMask and returns it through
+                # Gradio's own output path into this textbox.  process() reads
+                # and parses the JSON string (e.g. "[true,false,true,true]").
+                # It is intentionally invisible — the chip strip above is the UI.
+                bar_mask_val = gr.Textbox(
+                    value="",
+                    visible=False,
+                    elem_id="slurm-beat-mask-val",
+                    max_lines=1,
+                )
+
                 bpm_override = gr.Textbox(
                     label="BPM override (optional)",
                     placeholder="leave blank for auto-detect",
@@ -833,8 +878,8 @@ def build_ui() -> gr.Blocks:
                 )
                 stutter_skip_ms = gr.Slider(
                     label="skip length (ms)",
-                    minimum=0.0, maximum=100.0, step=1.0, value=0.0,
-                    info="0 = full-slice repeat (classic) · 20–40 ms = CD-skip · 5–15 ms = glitch buzz",
+                    minimum=0.0, maximum=500.0, step=5.0, value=0.0,
+                    info="0 = full-slice repeat (classic) · 5–15 ms = glitch buzz · 20–50 ms = CD-skip · 100–500 ms = phrase loop",
                 )
                 stutter_max_reps = gr.Slider(
                     label="reps (max)",
@@ -946,10 +991,27 @@ def build_ui() -> gr.Blocks:
                 return gr.update(value=True)   # auto-check shuffle
             return gr.update()                 # any other mode: leave checkbox alone
 
+        # Handler 1 (Python): update the shuffle checkbox when resolution changes.
         resolution.change(
             fn=_on_resolution_change,
             inputs=resolution,
             outputs=randomize_order,
+        )
+
+        # Handler 2 (JS-only, standalone): rebuild the beat-mask chip strip.
+        # This is a SEPARATE .change() call — not a .then() chain — because
+        # fn=None with outputs=[] in a chained .then() step stops firing after
+        # any preceding Python round-trip (like a slurmify run) completes.
+        # A standalone fn=None handler with a real output is the reliable pattern
+        # (same as in_btn / out_btn; see CLAUDE.md §"Python ↔ JavaScript boundary").
+        # The JS rebuilds the chip strip for the new resolution, then returns ""
+        # to bar_mask_val — correctly resetting the mask to all-on whenever the
+        # resolution changes (same reset that _slurmBuildBeatMask does internally).
+        resolution.change(
+            fn=None,
+            inputs=[resolution],
+            outputs=[bar_mask_val],
+            js="(v) => { window.slurmBuildBeatMask && window.slurmBuildBeatMask(v); return ['']; }",
         )
 
         # ── Randomize all slurm parameters ────────────────────────────────────
@@ -1051,17 +1113,33 @@ def build_ui() -> gr.Blocks:
             outputs=audio_in,
         )
 
-        # ── Go button: show dancer → slurmify → hide dancer ──────────────────
+        # ── Go button: show dancer + capture beat mask → slurmify → hide dancer
         # Three-step .then() chain:
-        #   1. Show the loading dancer GIF immediately (before Python starts).
-        #   2. Run process() — the actual DSP pipeline (may take a few seconds).
+        #   1. Show dancer AND capture beat mask in a single Python call.
+        #      This uses Gradio's "JS preprocessor" pattern: when both fn= and
+        #      js= are provided on the same event handler, Gradio runs js= first
+        #      client-side and its return value becomes the inputs for fn= (instead
+        #      of the component values).  The JS reads window._slurmBeatMask (the
+        #      boolean array maintained by the chip-strip code in INIT_JS) and
+        #      returns it as a JSON string.  The Python lambda receives that string,
+        #      stores it into bar_mask_val, and simultaneously makes the dancer
+        #      visible.  This is the only reliable way to bridge JS state into
+        #      Python in Gradio 5's Svelte runtime:
+        #        - fn=None + outputs in a .then() step hangs (server never acks)
+        #        - fn=None as the first .click() step silently breaks the chain
+        #        - Writing to a <textarea> with the React native-setter trick does
+        #          not update Svelte's internal state (always delivers "" to Python)
+        #   2. Run process() — reads bar_mask_val (now populated by step 1).
         #   3. Hide the dancer when done.
-        # Lambda wrappers are used for steps 1 and 3 because Gradio requires
-        # a callable; they return gr.Image(visible=…) with no inputs.
         go_btn.click(
-            fn=lambda: gr.Image(visible=True),
-            inputs=[],
-            outputs=dancer,
+            # js= runs client-side first; its return value becomes fn= inputs.
+            # Receives: bar_mask_val's current value (ignored by the JS).
+            # Returns:  [JSON string of window._slurmBeatMask, or "[]" if unset].
+            # Python fn: makes dancer visible and passes mask JSON through to output.
+            fn=lambda mask_json: (gr.Image(visible=True), mask_json),
+            inputs=[bar_mask_val],
+            outputs=[dancer, bar_mask_val],
+            js="(m) => [JSON.stringify(window._slurmBeatMask || [])]",
         ).then(
             fn=process,
             inputs=[
@@ -1071,6 +1149,7 @@ def build_ui() -> gr.Blocks:
                 stutter_skip_ms, stutter_max_reps, stutter_spread,
                 bpm_override,
                 output_format, start_sec, end_sec, seed_text,
+                bar_mask_val,
             ],
             outputs=audio_out,
         ).then(
@@ -1305,6 +1384,7 @@ def build_ui() -> gr.Blocks:
                 stutter_skip_ms, stutter_max_reps, stutter_spread,
                 bpm_override,
                 seed_text,
+                bar_mask_val,
                 # FX params for the PATCH metadata blob
                 fx_dist, fx_ring_freq, fx_ring_depth,
                 fx_delay_time, fx_delay_fb, fx_delay_mix,

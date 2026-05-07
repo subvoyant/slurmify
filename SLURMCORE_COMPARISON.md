@@ -23,8 +23,9 @@ Audacity, Reaper) with manual chopping, beat-repeat plugins, and resample-based
 speed-ups. The producer's ear is the main slicing instrument; the chopping is
 hand-placed and often imprecise.
 
-**Slurmify** is a single-file Python application that automates and extends the
-slurmcore method with the following deliberate departures:
+**Slurmify** is a local Python application (five focused modules, distributed
+as a signed macOS `.app`) that automates and extends the slurmcore method with
+the following deliberate departures:
 
 1. **Pitch and tempo are independent controls** — not coupled by the resample.
 2. **Slicing is beat-grid-aware** — BPM is detected and slices fall on note
@@ -687,4 +688,4 @@ narrative and `docs/adr/` for the architecture decision records.
 
 ---
 
-*Subvoyant SIENA Slurmer · v0.1.3 · Local, reproducible, opinionated slurmcore.*
+*Subvoyant SIENA Slurmer · v0.1.4 · Local, reproducible, opinionated slurmcore.*

@@ -38,53 +38,72 @@ Read in order on the first pass; afterwards it works as a reference.
 
 ### For newcomers
 
-Slurmify is a **single-file Python application** (`app.py`, ~1500 lines)
-that runs a small local web server (Gradio) and opens a browser tab. The
-UI lets the user drop in audio, slice it up, and apply effects.
-Everything happens on the user's own machine — there is no cloud
-component.
+Slurmify is a **five-module Python application** that runs a small local
+web server (Gradio) and opens a browser tab. The UI lets the user drop in
+audio, slice it up, and apply effects. Everything happens on the user's
+own machine — there is no cloud component.
 
-A second, parallel program lives inside the same file: a chunk of
+A second, parallel program lives in the static-assets module: a chunk of
 **JavaScript** (`INIT_JS`, a multi-line Python string) that runs in the
 browser and handles real-time audio effects, keyboard shortcuts, and a
 live playhead clock. We embed it because Gradio's frontend is the only
 practical surface for running browser code in this app.
 
 The repo also contains a build pipeline (`build.sh` + `slurmify.spec`)
-that turns `app.py` into a signed, notarized macOS `.app` bundle so we
-can distribute it as a `.dmg`.
+that turns the Python modules into a signed, notarized macOS `.app` bundle
+so we can distribute it as a `.dmg`.
+
+**Five-module architecture** (as of v0.1.3, Phase 4 modularisation — ADR-0018):
+
+| Module | Lines | Role |
+|---|---|---|
+| `app.py` | ~199 | Bootstrap, imageio-ffmpeg wiring, `__main__` launch |
+| `slurm_ui.py` | ~1 320 | Gradio layout, all event handlers, video export |
+| `ui_assets.py` | ~1 800 | `INIT_JS` (browser JS), `CUSTOM_CSS`, base64 media |
+| `slurmcore.py` | ~600 | Pure audio DSP — NumPy arrays in/out, no I/O |
+| `slurmio.py` | ~320 | Filesystem IO — load/write audio, session temp dir |
 
 ```
 slurmify/
-├── app.py                    ← everything: audio engine + Gradio UI + JS
+├── app.py                    ← bootstrap + __main__: tiny entry point (~199 lines)
+├── slurm_ui.py               ← all Gradio UI: layout, event handlers, video export
+├── ui_assets.py              ← INIT_JS, CUSTOM_CSS, base64 GIFs and icons
+├── slurmcore.py              ← pure DSP: slurmify(), apply_fx(), _fx_* helpers
+├── slurmio.py                ← filesystem IO: load_audio, _write_audio, temp dir
 ├── requirements.txt          ← Python dependencies
-├── slurmify.spec             ← PyInstaller spec (how to freeze app.py)
+├── slurmify.spec             ← PyInstaller spec (how to freeze all five modules)
 ├── build.sh                  ← codesign + notarize + DMG packaging
 ├── entitlements.plist        ← macOS hardened-runtime entitlements
 ├── stubs/numba/__init__.py   ← shim so librosa imports work in the bundle
-├── assets/siena_dancer.gif   ← loading animation
+├── assets/siena_dancer.gif   ← processing animation (shown during slurmify run)
+├── assets/siebaSlurm_A003.mp4 ← pre-encoded 1280×720 loop for video export (ADR-0006)
 ├── icon/                     ← .icns and source PNGs
+├── graphic/                  ← hover-gif sources (max.gif, hobermanmax.gif, RGBOB.gif)
+├── docs/adr/                 ← architecture decision records (0001–0018)
 ├── README.md                 ← user-facing setup
 ├── TECHNICAL.md              ← this file
 ├── CLAUDE.md                 ← orientation for AI agents
+├── AGENT_DIGEST.md           ← pre-computed code map for agents (read this first)
 └── SLURMER_BETATEST_INSTRUCTIONS.md  ← release notes for testers
 ```
 
 ### For experts
 
-- Single-file design is deliberate; do not split modules without a
-  strong reason. PyInstaller analysis is simpler when there is one
-  entry point with explicit imports.
-- The DSP code is pure NumPy/SciPy plus `pyrubberband` (a CLI wrapper
-  around the `rubberband` binary). No Python audio plug-in framework
-  abstraction sits between us and the math.
+- The five-module split was done in four phases (ADR-0015 through
+  ADR-0018). See [§17](#17-modularisation) for the full story.
+- The DSP code (`slurmcore.py`) is pure NumPy/SciPy plus `pyrubberband`
+  (a CLI wrapper around the `rubberband` binary). No audio plug-in
+  framework abstraction sits between us and the math.
 - Gradio is treated as **a thin presentation layer**, not a framework.
-  The UI module (`build_ui()`) is mostly declarative and could be
-  swapped for any other web UI without touching `slurmify()` or the FX
-  DSP functions.
+  `build_ui()` in `slurm_ui.py` is mostly declarative and could be
+  swapped for any other web UI without touching `slurmify()` in
+  `slurmcore.py` or the FX DSP functions.
 - The boundary between Python and JavaScript runs through Gradio
   events with `fn=None, js=...`, plus a global `window.slurmFx` API for
   slider-to-effect calls.
+- Import graph has no cycles:
+  `app.py → slurm_ui → slurmio / slurmcore / ui_assets`
+  Nothing imports from `app.py`.
 
 ---
 
@@ -318,18 +337,24 @@ apply_envelope(slice_audio, sr, envelope_ms: float) -> np.ndarray
   short slices.
 
 ```python
-slurmify(input_path, speed, resolution, transient_sensitivity,
+slurmify(y, sr, speed, resolution, transient_sensitivity,
          envelope_ms, preserve_pitch, pitch_shift_semitones,
          randomize_order, reverse_chance, stutter_chance,
-         start_sec=0, end_sec=0, output_format="wav",
-         seed=None, _progress=None) -> str
+         stutter_skip_ms=0, stutter_max_reps=4, stutter_spread=0.0,
+         start_sec=0, end_sec=0, bpm_override=None,
+         seed=None, _progress=None) -> tuple[np.ndarray, int]
 ```
-- Returns a filesystem path to a temp file (`tempfile.mkstemp`).
-  Caller owns the file; Gradio cleans them on shutdown.
+
+**Signature change (Phase 2 — ADR-0016):** `slurmify()` now lives in
+`slurmcore.py`. It takes `(y, sr)` — a NumPy audio array and sample rate —
+and returns `(ndarray, int)`. It does **not** load or write files. The
+`process()` wrapper in `slurm_ui.py` handles loading with `load_audio()` and
+writing with `_write_audio()` from `slurmio.py`.
+
 - `_progress` is `gr.Progress()` (or any `callable(fraction, desc=str)`).
-  Progress fractions are tuned so the UI's progress bar fills smoothly:
-  load 0.05 → stretch 0.15 → pitch 0.28 → slice points 0.40 →
-  slicing 0.50 → per-slice 0.60-0.80 → mix 0.82 → encode 0.92 → done 1.0.
+  Progress fractions: load 0.05 → stretch 0.15 → pitch 0.28 → slice
+  points 0.40 → slicing 0.50 → per-slice 0.60–0.80 → mix 0.82 →
+  encode 0.92 → done 1.0.
 - Determinism: when `seed` is set we seed both `random` and `np.random`
   so reverse/stutter decisions and global shuffle replay identically.
   rubberband is **not** seeded; in practice it is deterministic for
@@ -520,7 +545,7 @@ what should happen when a button is clicked or a slider changes
 (`btn.click(fn=..., inputs=..., outputs=...)`), and Gradio handles
 all the websocket plumbing.
 
-`build_ui()` in `app.py` is one big nested `with` block that builds
+`build_ui()` in `slurm_ui.py` is one big nested `with` block that builds
 the whole layout. The UI is divided into:
 
 - A header (icon + title + version tag)
@@ -530,8 +555,8 @@ the whole layout. The UI is divided into:
 - The `⚡ real-time FX` accordion: sliders + the FX preview audio +
   burn button + burn output
 
-The actual rendering happens in `ui.launch(...)` at the bottom of the
-file.
+The actual rendering happens in `ui.launch(...)` in `app.py`'s `__main__`
+block (CSS, JS, and theme are all passed there — not to `gr.Blocks()`).
 
 ### For experts — wiring rules
 
@@ -930,28 +955,31 @@ A non-exhaustive list of things that will bite you if you forget them.
 
 ### A new slurmify parameter (e.g. low-pass filter)
 
-1. Add a `gr.Slider`/`gr.Checkbox` inside `build_ui()` in the input
-   column.
-2. Add it to the `inputs=[...]` of the `process` click chain.
-3. Add a parameter to `process()` and pass it through to `slurmify()`.
-4. Implement the DSP step inside `slurmify()` at the appropriate
-   pipeline stage.
-5. Update `_progress` fractions if the new step is heavy.
+1. Add a `gr.Slider`/`gr.Checkbox` inside `build_ui()` in **`slurm_ui.py`**,
+   in the input column.
+2. Add it to the `inputs=[...]` of the `process` click chain (also in
+   `build_ui()`).
+3. Add a parameter to `process()` in `slurm_ui.py` and pass it through to
+   `slurmify()`.
+4. Implement the DSP step inside `slurmify()` in **`slurmcore.py`** at the
+   appropriate pipeline stage. Do NOT add DSP code to `slurm_ui.py`.
+5. Update `_progress` fractions in `slurmify()` if the new step is heavy.
 
 ### A new FX
 
-1. **JS preview:** in `_fxSetup`, create the new AudioNodes, connect
-   them into the chain in the right place, and add their state to
-   `_fxP`. Update `_fxApply()` to push state into nodes. Expose
-   setters on `window.slurmFx`.
-2. **Python burn parity:** add a `_fx_<name>(y, sr, ...)` function
-   that produces the same output as the JS graph for matching
-   parameters. Call it from `burn_fx` in the same chain order.
-3. **UI:** add sliders to the FX accordion and a `change` handler
-   that calls the new `slurmFx.set*` setter.
-4. **Pass parameters through `burn_btn.click`** in
-   `inputs=[..., your_slider]`, then accept them as the matching
-   positional parameter in `burn_fx`.
+1. **JS preview** (`ui_assets.py` — inside `INIT_JS`): in `_fxSetup`,
+   create the new AudioNodes, connect them into the chain in the right
+   place, and add their state to `_fxP`. Update `_fxApply()` to push
+   state into nodes. Expose setters on `window.slurmFx`.
+2. **Python burn parity** (`slurmcore.py`): add `_fx_<name>(y, sr, ...)`
+   that produces the same output as the JS graph for matching parameters.
+   Add it to `apply_fx()` in the same chain order as the JS graph.
+3. **UI** (`slurm_ui.py`): add sliders to the FX accordion in `build_ui()`
+   and a `change` handler that calls the new `slurmFx.set*` setter.
+4. **Pass parameters through `burn_btn.click`** in `inputs=[..., your_slider]`
+   (in `build_ui()`), then accept them as the matching positional parameter
+   in `burn_fx()` in `slurm_ui.py`, and pass them to `apply_fx()` in
+   `slurmcore.py`.
 
 ### A new keyboard shortcut
 
@@ -981,19 +1009,32 @@ and clicks the resulting button. Make sure the button has a stable
 
 ## 14. Version-bump checklist
 
-Five places carry the version string. All must move together.
+Ten places carry the version string. All must move together.
 
-| File | Symbol |
+| File | What to change |
 |---|---|
-| `build.sh` | `VERSION="0.0.X"` |
-| `slurmify.spec` | `CFBundleShortVersionString`, `CFBundleVersion` |
-| `app.py` | The `<div class="slurm-tag">` line in the header |
+| `build.sh` | `VERSION="X.Y.Z"` |
+| `slurmify.spec` | `CFBundleShortVersionString` and `CFBundleVersion` (two keys) |
+| `slurm_ui.py` | `__version__ = "X.Y.Z"` near the top of the module |
+| `slurm_ui.py` | Hard-coded version string in the `<div class="slurm-tag">` HTML inside `build_ui()` (cannot share the Python variable — Gradio HTML is a string literal) |
 | `SLURMER_BETATEST_INSTRUCTIONS.md` | Title (line 1), DMG filename in the install step, footer |
-| `SLURMER_BETATEST_INSTRUCTIONS.md` | New "What's new in 0.0.X" section at the top |
+| `SLURMER_BETATEST_INSTRUCTIONS.md` | New "What's new in X.Y.Z" section at the top |
+| `TECHNICAL.md` | Last-updated stamp at the bottom |
+| `AGENT_DIGEST.md` | Last-updated stamp at the bottom + "Current version" near the top |
+| `SLURMCORE_COMPARISON.md` | Version stamp in the footer |
+| `docs/adr/0008-self-describing-mp4.md` | Example version field in the JSON sample (illustrative) |
 
-After bumping: `./build.sh` produces `SubvoyantSIENASlurmer-0.0.X.dmg`
-in the repo root. The DMG name is auto-derived from `VERSION` so
-there's no separate place to update it.
+After bumping, verify no stale references remain:
+
+```bash
+grep -rn 'X\.Y\.(Z-1)' --include='*.py' --include='*.sh' \
+    --include='*.spec' --include='*.md' . \
+    | grep -v '/.venv/' | grep -v '/build/' | grep -v '/dist/'
+```
+
+The only acceptable remaining matches are historical "What's new" entries
+in `SLURMER_BETATEST_INSTRUCTIONS.md`. The DMG filename is auto-derived
+from `VERSION` in `build.sh` — don't update it separately.
 
 ---
 
@@ -1174,4 +1215,81 @@ wait and rerun. Don't remove `--timestamp` (breaks notarization).
 
 ---
 
-*Last updated: 2026-05-06 · v0.1.3*
+## 17. v0.1.3 changes (May 2026)
+
+### Adaptive beat-grid slicing
+
+`detect_slice_points()` in `slurmcore.py` was rewritten to follow the
+actual beat positions detected by `librosa.beat.beat_track` rather than
+a uniform grid extrapolated from a single global BPM estimate.
+
+**Before (v0.1.2):** one BPM value estimated from the track; then a
+perfectly regular grid was laid down for the entire file. On variable-tempo
+material (live drums, any track with "feel") the grid drifted increasingly
+out of sync with the audio as the file progressed.
+
+**After (v0.1.3):** librosa returns a *list* of actual beat timestamps.
+`detect_slice_points` subdivides or coarsens those beat *intervals* per-pair
+rather than assuming uniform spacing. The grid now bends with the song —
+on a click track you won't hear a difference; on live material, slice
+boundaries land on real musical events.
+
+### BPM override control
+
+New text field in `slurm_ui.py` / `build_ui()`, below the slice resolution
+picker. Accepts an optional integer or float. When filled in, the value is
+passed to `librosa.beat.beat_track` as a `start_bpm` hint, anchoring it to
+the right tempo octave. Useful when librosa halves or doubles the actual BPM
+(e.g. detects 70 BPM on a 140 BPM track). Leave blank for auto-detect.
+
+The value flows through:
+`process()` → `slurmify()` → `detect_slice_points(bpm_override=...)`.
+
+---
+
+## 18. Modularisation — Phases 1–4 (v0.1.3, May 2026)
+
+The original `app.py` grew to 3,569 lines by v0.1.2. Four successive
+extraction phases split it into five focused modules without changing any
+observable behaviour.
+
+| Phase | ADR | What moved out | Result |
+|---|---|---|---|
+| 1 | ADR-0015 | `INIT_JS`, `CUSTOM_CSS`, base64 media → `ui_assets.py` | app.py ~2 100 lines |
+| 2 | ADR-0016 | DSP (`slurmify`, `apply_fx`, `_fx_*`, `detect_slice_points`) → `slurmcore.py` | app.py ~1 320 lines |
+| 3 | ADR-0017 | Filesystem IO (`load_audio`, `_write_audio`, `_asset`, session temp) → `slurmio.py` | app.py ~1 320 lines |
+| 4 | ADR-0018 | Gradio UI (`build_ui`, `process`, `burn_fx`, `render_video`, `_quit_app`) → `slurm_ui.py` | app.py ~199 lines |
+
+### Purity rules enforced across modules
+
+| Module | Must never import |
+|---|---|
+| `slurmcore.py` | `os`, `sys`, `gradio`, `soundfile`, `shutil`, `subprocess` — pure DSP only |
+| `slurmio.py` | `gradio` at the top level (one lazy import inside a try/except is permitted) |
+| `slurm_ui.py` | `app` (circular); imports from `slurmio`, `slurmcore`, `ui_assets` only |
+
+### For newcomers — why this matters
+
+Before the split, editing a CSS rule meant opening a 3,500-line file,
+scrolling past all the audio code, and hoping you didn't accidentally
+break something on the other side of the file. After the split:
+
+- Want to change the UI layout? Open `slurm_ui.py`.
+- Want to add a new DSP effect? Open `slurmcore.py`.
+- Want to add a new output format? Open `slurmio.py`.
+- Want to change the look? Open `ui_assets.py`.
+- Want to change how the app starts? Open `app.py`.
+
+Each file has one job, and that job is clear from the filename.
+
+### PyInstaller impact
+
+Every local `.py` module must be in `hiddenimports` in `slurmify.spec`.
+PyInstaller's static analysis auto-detects installed *packages* but not
+local `.py` files. The current list is `ui_assets`, `slurmcore`, `slurmio`,
+`slurm_ui`. Removing any entry causes the bundled `.app` to crash at startup
+with `ModuleNotFoundError`.
+
+---
+
+*Last updated: 2026-05-07 · v0.1.4 · Beat mask chip strip + JS→Python bridge fix (ADR-0019)*
