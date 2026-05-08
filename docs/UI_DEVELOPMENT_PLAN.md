@@ -1,6 +1,6 @@
 # UI Development Plan — Subvoyant SIENA Slurmer
 
-**Status:** Living document · v0.1.5 baseline · May 2026  
+**Status:** Living document · v0.1.6 baseline · May 2026  
 **Audience:** developers and decision-makers  
 **Scope:** everything from near-term Gradio improvements through long-term
 architecture decisions about replacing Gradio entirely
@@ -451,4 +451,4 @@ Tauri migration or should be cleaned up during Phase 6:
 
 ---
 
-*Last updated: 2026-05-07 · v0.1.5*
+*Last updated: 2026-05-07 · v0.1.6*

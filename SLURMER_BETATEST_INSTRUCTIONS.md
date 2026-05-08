@@ -1,6 +1,19 @@
-# Subvoyant SIENA Slurmer v0.1.5 — Beta Test Notes
+# Subvoyant SIENA Slurmer v0.1.6 — Beta Test Notes
 
 Hi Person — thanks for testing the SIENA Slurmer. Here's everything you need to know.
+
+---
+
+## What's new in 0.1.6
+
+A signal-flow release: stereo audio now survives end-to-end through the whole slurmify pipeline. A stereo source produces a stereo output instead of being mixed down to mono, so pads, panning, doubled tracks, ambient stereo reverb tails, and drum overhead positioning all stay intact in the slurm.
+
+- **Stereo end-to-end.** Drop in a stereo .wav / .mp3 / .flac / video file → get a stereo slurm output. Mono sources still produce mono output (no file-size penalty if you don't need stereo). The L/R relationship is preserved through the slicer, time-stretcher, pitch-shifter, beat trim, stutter, beat gap, and the FX burn chain — every stage is now channel-aware.
+- **Stereo time-stretching is channel-coupled.** pyrubberband processes both channels together so they stay phase-locked — no decorrelation or comb-filtering between L and R when you slow the audio down or speed it up.
+- **Beat detection still uses a mono mixdown internally.** librosa's tempo and onset detection require a mono input; the detected slice positions then apply to the original stereo array. This is industry-standard practice — every beat tracker we've seen does the same. You don't notice it as a user; the result is identical to mono detection on the same content.
+- **Bug fix in the FX burn path.** A latent bug in `burn_fx` would have written corrupt files (a 2-sample WAV with hundreds of thousands of channels) the first time someone burned FX onto stereo audio. Pre-v0.1.6 this never happened because the slurm output was always mono, so burn_fx only ever saw mono input. Now that the slurm output can be stereo, the bug would have surfaced — fixed in this release with the same `.T` transpose pattern used everywhere else at the soundfile boundary.
+- **Memory and processing time roughly double for stereo sources.** Two channels means twice the samples to push through every step. Long stereo files (>10 minutes) will be noticeably slower than the equivalent mono path. If you don't need stereo for a particular slurm, you can manually convert your input to mono before uploading (or shout if you'd like a "downmix to mono" UI toggle — easy to add).
+- **Output files are now larger for stereo sources.** A stereo WAV is exactly 2× the size of the same-length mono WAV, as expected. Compressed formats (mp3, m4a, ogg) only grow about 1.5–1.7× because the codec exploits inter-channel correlation.
 
 ---
 
@@ -111,7 +124,7 @@ A big release. Everything that came after 0.0.7 (which Bob and Max have already)
 
 ## Installing
 
-1. Open the **SubvoyantSIENASlurmer-0.1.5.dmg** file you received
+1. Open the **SubvoyantSIENASlurmer-0.1.6.dmg** file you received
 2. Drag **Subvoyant SIENA Slurmer** into your **Applications** folder
 3. Eject the DMG (drag it to Trash, or right-click → Eject)
 
@@ -196,4 +209,4 @@ Close the browser tab, then quit Slurmify from the Dock (right-click → Quit) o
 
 ---
 
-*Subvoyant · Built with Python + Gradio · Runs 100% locally · v0.1.5 alpha*
+*Subvoyant · Built with Python + Gradio · Runs 100% locally · v0.1.6 alpha*

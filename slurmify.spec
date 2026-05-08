@@ -218,8 +218,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName":               "SIENA Slurmer",
         "CFBundleDisplayName":        "Subvoyant SIENA Slurmer",
-        "CFBundleShortVersionString": "0.1.5",
-        "CFBundleVersion":            "0.1.5",
+        "CFBundleShortVersionString": "0.1.6",
+        "CFBundleVersion":            "0.1.6",
         "CFBundleIdentifier":         "com.subvoyant.siena.slurmer",
         "NSHighResolutionCapable":    True,
         "NSPrincipalClass":           "NSApplication",

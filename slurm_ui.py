@@ -99,7 +99,7 @@ from ui_assets import _ICON_TAG
 # in the MP4 metadata.  The slurm-tag <div> in build_ui() hard-codes it too
 # (Gradio HTML is a string, not an expression) — keep both in sync when
 # bumping the version.  Also update build.sh and slurmify.spec.
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -355,8 +355,18 @@ def burn_fx(
         phase_depth = float(phase_depth or 0),
     )
 
-    # 5. Squeeze back to 1-D for mono, leave stereo as-is.
-    #    soundfile expects (n,) for mono or (n, channels) for stereo.
+    # 5. Convert back to soundfile's expected layout (ADR-0021):
+    #      mono   → shape (n,)
+    #      stereo → shape (n, channels)
+    #    apply_fx returns (channels, n) — slurmcore's channels-FIRST
+    #    convention — so for stereo we need a `.T` transpose.  Mono was
+    #    promoted to (1, n) in step 3 and gets squeezed back to (n,) here.
+    #
+    #    NOTE: this used to leave stereo as (2, n) — that was a latent bug
+    #    that never surfaced before v0.1.6 because the slurm pipeline was
+    #    mono-only, so the FX burn input was always mono.  Once stereo
+    #    became end-to-end (ADR-0021), the bug would have written corrupt
+    #    files until this transpose was added.
     if was_mono:
         export = y[0]   # (1, n) → (n,)
     elif y.shape[0] == 1:
@@ -364,7 +374,7 @@ def burn_fx(
         # if all _fx_* stages treated it as mono.  Squeeze for consistency.
         export = y[0]
     else:
-        export = y      # stereo: leave as (2, n) — _write_audio handles it
+        export = y.T    # (channels, n) → (n, channels) for soundfile
 
     # 6. Write to a new session-scoped temp file.
     return _write_audio(export, sr, (out_fmt or "wav").lower())
@@ -676,10 +686,16 @@ def process(
     This is the Python function wired to the go_btn.click chain.  It:
       1. Validates the upload and extension.
       2. Parses the seed and BPM override text boxes.
-      3. Loads the audio via slurmio.load_audio (mono, 44 100 Hz).
+      3. Loads the audio via slurmio.load_audio at 44 100 Hz, preserving
+         source channels (mono → 1-D, stereo → (channels, n) — ADR-0021).
       4. Calls slurmcore.slurmify — pure DSP, no I/O.
-      5. Writes the output via slurmio._write_audio.
-      6. Returns the temp file path (Gradio wires it into audio_out).
+      5. Transposes stereo output (channels, n) → (n, channels) for
+         soundfile's expected layout.
+      6. Writes the output via slurmio._write_audio.
+      7. Returns the temp file path (Gradio wires it into audio_out).
+
+    Stereo is end-to-end as of v0.1.6 (ADR-0021).  A mono source produces
+    a mono output file; a stereo source produces a stereo output file.
 
     The gr.Progress() default argument lets Gradio inject a progress bar
     callback automatically — slurmify() receives it as `_progress` and
@@ -777,6 +793,23 @@ def process(
             beat_gap_note=active_beat_gap_note,
             _progress=progress,
         )
+
+        # ── Channel-layout boundary (ADR-0021) ──────────────────────────────
+        # slurmify returns audio in slurmcore's channels-FIRST convention:
+        #   shape (n,)              for mono
+        #   shape (n_channels, n)   for stereo
+        #
+        # soundfile (used inside _write_audio) expects the OPPOSITE for
+        # stereo:
+        #   shape (n,)              for mono
+        #   shape (n, n_channels)   for stereo
+        #
+        # Mono passes through unchanged in either convention.  For stereo
+        # we transpose at this boundary so _write_audio gets the layout
+        # it documents.  (This mirrors what burn_fx already does for the
+        # FX-burn path.)
+        if y_out.ndim == 2:
+            y_out = y_out.T
         return _write_audio(y_out, sr_out, output_format)
     except ValueError as e:
         # slurmify raises ValueError for user-facing error conditions
@@ -835,7 +868,7 @@ def build_ui() -> gr.Blocks:
               """ + _ICON_TAG + """
               <div class="slurm-header-text">
                 <h1 class="slurm-title"><a href="https://www.subvoyant.com" target="_blank" rel="noopener noreferrer" class="slurm-header-link">SIENA SLURMER</a></h1>
-                <div class="slurm-tag">subvoyant · chopped · sped-up · transient-sliced · v0.1.5</div>
+                <div class="slurm-tag">subvoyant · chopped · sped-up · transient-sliced · v0.1.6</div>
               </div>
               <div class="slurm-skin-wrap">
                 <label for="slurm-skin-picker">skin</label>

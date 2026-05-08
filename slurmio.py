@@ -280,14 +280,25 @@ def _reveal_temp_dir() -> None:
 # ffmpeg for compressed formats (MP3, AAC, M4A) and video containers.
 #
 # The output is always:
-#   - mono  (stereo/surround tracks are mixed down to a single channel)
 #   - float32  (values in [-1.0, 1.0])
 #   - 44 100 Hz  (resampled from whatever the source uses)
 #
-# This normalised representation is what slurmcore.py expects.  burn_fx()
-# in app.py deliberately bypasses load_audio and calls librosa.load directly
-# (with sr=None, mono=False) to preserve the original SR and channel layout
-# for the FX chain — that's intentional.
+# Channel layout depends on the `mono` kwarg:
+#   - mono=False (default — ADR-0021): preserve source channels.
+#       mono source   → shape (n,)             — 1-D
+#       stereo source → shape (2, n)           — librosa's "channels-first"
+#                                                multichannel convention,
+#                                                which matches slurmcore's
+#                                                FX-chain shape contract.
+#   - mono=True: always return shape (n,), mixing down stereo to mono.
+#       Used by callers that need a guaranteed 1-D array (e.g. components
+#       that don't yet handle multichannel).
+#
+# burn_fx() in slurm_ui.py deliberately bypasses load_audio and calls
+# librosa.load directly (with sr=None, mono=False) to preserve the original
+# SR for the FX chain — that's intentional.  The slurmify pipeline goes
+# through this function with mono=False so stereo input → stereo output
+# end-to-end (ADR-0021).
 # ============================================================================
 
 # Set of file extensions that the upload handler in app.py accepts.
@@ -310,32 +321,52 @@ SUPPORTED_EXTS: frozenset[str] = frozenset({
 TARGET_SR: int = 44_100
 
 
-def load_audio(path: str) -> tuple[np.ndarray, int]:
-    """Load any supported audio or video file into a mono float32 array.
+def load_audio(path: str, *, mono: bool = False) -> tuple[np.ndarray, int]:
+    """Load any supported audio or video file into a float32 numpy array at TARGET_SR.
 
     This is the standard entry point for the slurmify processing pipeline.
-    It always returns a mono, float32, 44 100 Hz numpy array so that
-    slurmcore.py can make safe assumptions about the input shape.
+    Returns a float32, 44 100 Hz numpy array.  Channel layout depends on
+    the `mono` keyword and the source file (ADR-0021):
 
-    If the source is stereo or surround, librosa mixes the channels down to
-    mono automatically (default behavior of librosa.load).
+        mono=False (default)
+            Preserves source channels.
+            Mono source   → shape (n,)
+            Stereo source → shape (2, n)  ← channels-first, matches slurmcore
+        mono=True
+            Always mixes down to mono and returns shape (n,).
+
+    The default changed from True to False in v0.1.6 (ADR-0021) so that
+    stereo audio survives end-to-end through the slurmify pipeline.  Any
+    legacy caller that requires a guaranteed 1-D mono array can pass
+    `mono=True` explicitly.
 
     Parameters
     ----------
     path : str
         Absolute path to any file in SUPPORTED_EXTS.  Video files are
         demuxed transparently: only the first audio stream is extracted.
+    mono : bool, keyword-only
+        If True, mix down to mono regardless of source channel count.
+        If False (default), preserve the source's channel layout.
 
     Returns
     -------
-    y : np.ndarray, shape (n_samples,), dtype float32
-        Audio time series.  Values are in the range [-1.0, 1.0].
+    y : np.ndarray, dtype float32
+        Audio time series.  Shape is (n,) for mono or (channels, n) for
+        multichannel sources.  Values are in the range [-1.0, 1.0].
     sr : int
         Sample rate.  Always TARGET_SR (44 100).
     """
     # librosa.load returns float64 by default; we cast to float32 to halve
     # memory usage and match what slurmcore's numpy operations expect.
-    y, sr = librosa.load(path, sr=TARGET_SR, mono=True)
+    #
+    # When mono=False, librosa returns:
+    #   shape (n,)        for mono sources
+    #   shape (channels, n) for multichannel sources
+    # The "channels-first" layout is librosa's documented convention and
+    # matches the (n_channels, n_samples) shape that slurmcore's _fx_*
+    # helpers and (post-v0.1.6) slurmify() expect — see ADR-0021.
+    y, sr = librosa.load(path, sr=TARGET_SR, mono=mono)
     return y.astype(np.float32), sr
 
 
@@ -390,8 +421,12 @@ def _write_audio(y: np.ndarray, sr: int, fmt: str) -> str:
     y : np.ndarray
         Audio samples.  Shape: (n_samples,) for mono,
         or (n_samples, n_channels) for stereo (soundfile convention).
-        Note: slurmcore's _fx_* helpers use (n_channels, n_samples);
-        the caller (burn_fx in app.py) is responsible for transposing.
+
+        IMPORTANT: slurmcore's _fx_* helpers AND slurmify() (post-v0.1.6,
+        ADR-0021) both use the OPPOSITE convention — (n_channels, n_samples).
+        The caller (burn_fx and process() in slurm_ui.py) is responsible
+        for transposing 2-D arrays via `y.T` before calling _write_audio.
+        1-D mono arrays pass through unchanged in either convention.
     sr : int
         Sample rate in Hz.  Typically TARGET_SR (44 100).
     fmt : str

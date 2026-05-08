@@ -195,6 +195,19 @@ ignored. The full table with one-line warnings + ADR links lives in
     Python is the source of truth for the slurm output. Change the
     grammar in one place → change it in the other in the same commit.
     (ADR-0020)
+14. **Channel-layout boundary rule.** Slurmcore uses
+    `(n_channels, n_samples)` (channels-first) for stereo. soundfile
+    and pyrubberband both use `(n_samples, n_channels)`
+    (channels-last). Transposes happen at the boundaries — `.T`
+    before `_write_audio`, `_stereo_pyrb` around pyrb calls. NEVER
+    assume `y` is 1-D inside slurmcore — use `_n_samples(y)` for
+    the time-axis length and `y[..., a:b]` for time-axis slicing.
+    (ADR-0021)
+15. **Pass mono mixdowns to librosa beat/onset detection.**
+    `librosa.beat.beat_track` and `librosa.onset.onset_detect`
+    interpret 2-D input differently than our convention. Always
+    feed them `_to_mono(y)`; the returned sample positions apply
+    correctly to the original stereo array. (ADR-0021)
 
 **For Gradio-specific oddities** (label rendering changes when `info=`
 is added, `:focus-within` block highlight, `gr.Audio.interactive=False`

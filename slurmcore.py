@@ -62,6 +62,28 @@ Public API (functions imported by app.py)
       Called by burn_fx() in app.py after loading the file.
 
 ────────────────────────────────────────────────────────────────────────────────
+Channel layout convention (IMPORTANT — ADR-0021)
+────────────────────────────────────────────────────────────────────────────────
+Slurmcore handles BOTH mono (1-D) and stereo (2-D) numpy arrays uniformly.
+The 2-D layout is **(n_channels, n_samples)** — channels on the first axis,
+time on the last.  This is also librosa's documented multichannel
+convention and matches the existing _fx_* helpers.
+
+Two other libraries we touch use the OPPOSITE layout:
+  • soundfile uses (n_samples, n_channels) — slurmio's _write_audio expects this.
+  • pyrubberband uses (n_samples, n_channels) — see _stereo_pyrb below.
+
+Transposes happen at the module boundaries:
+  • slurmify → process() → _write_audio :  process() does `.T` on 2-D arrays
+                                            before passing to _write_audio.
+  • slurmify → pyrubberband              :  _stereo_pyrb() handles the .T
+                                            internally.
+
+Inside slurmcore, never assume y is 1-D.  Use y.shape[-1] for sample count
+(NOT len(y)), use y[..., a:b] for time-axis slicing, and use _to_mono(y)
+when an algorithm (librosa beat/onset detection) requires a 1-D input.
+
+────────────────────────────────────────────────────────────────────────────────
 Dual FX channel constraint (IMPORTANT — DO NOT break this)
 ────────────────────────────────────────────────────────────────────────────────
 Every FX effect here has a matching implementation in the browser-side Web Audio
@@ -193,6 +215,76 @@ def _note_to_ms(note: str | None, bpm: float) -> float:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Channel-aware shape helpers (ADR-0021)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Slurmcore stores audio as either:
+#   • 1-D shape (n,)              — mono
+#   • 2-D shape (n_channels, n)   — stereo / multichannel ("channels first")
+#
+# These helpers let the rest of the module write shape-agnostic code without
+# scattering `if y.ndim == 1:` branches everywhere.
+# ────────────────────────────────────────────────────────────────────────────
+
+def _n_samples(y: np.ndarray) -> int:
+    """Return the sample count along the time axis (always the LAST axis).
+
+    Works for both 1-D mono and 2-D (channels, n) stereo arrays.  Use this
+    instead of ``len(y)`` — len(y) returns the channel count for a 2-D
+    array, which is almost never what you actually want.
+    """
+    return y.shape[-1]
+
+
+def _to_mono(y: np.ndarray) -> np.ndarray:
+    """Return a 1-D mono mixdown of y; pass-through for already-mono arrays.
+
+    Used wherever an algorithm requires a 1-D input — specifically
+    librosa's beat tracker and onset detector, which interpret 2-D input
+    in ways that don't match our (channels, n) convention.
+
+    The mixdown is a simple per-sample channel mean; this is fine for
+    detection purposes (we slice the original stereo array at the
+    detected positions afterwards).
+    """
+    if y.ndim == 1:
+        return y
+    return y.mean(axis=0).astype(y.dtype)
+
+
+def _stereo_pyrb(pyrb_fn, y: np.ndarray, sr: int, *args) -> np.ndarray:
+    """Wrap a pyrubberband call with the right shape for its API.
+
+    pyrubberband's time_stretch and pitch_shift accept (n,) for mono or
+    (n, channels) for stereo — channels-LAST.  Slurmcore stores stereo
+    as (channels, n) — channels-FIRST (ADR-0021).  This helper transposes
+    in and out at the boundary so callers don't have to think about it.
+
+    Parameters
+    ----------
+    pyrb_fn : callable
+        Either pyrb.time_stretch or pyrb.pitch_shift.
+    y : np.ndarray
+        Audio array, shape (n,) or (channels, n).
+    sr : int
+        Sample rate.
+    *args
+        Additional positional arguments forwarded to pyrb_fn (the rate
+        for time_stretch, the n_steps for pitch_shift).
+
+    Returns
+    -------
+    np.ndarray
+        Result in the SAME shape convention as `y` — 1-D in → 1-D out;
+        (channels, n) in → (channels, n) out.
+    """
+    if y.ndim == 1:
+        return pyrb_fn(y, sr, *args)
+    # Transpose to (n, channels) for pyrb, then transpose result back.
+    return pyrb_fn(y.T, sr, *args).T
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # detect_slice_points
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -301,6 +393,9 @@ def detect_slice_points(
     # The seed is set by slurmify() before calling us, so the same seed
     # always produces the same sequence of slice positions.
     if resolution == "MAX RANDOM":
+        # MAX RANDOM only cares about total length, not channel layout —
+        # use _n_samples so the same loop works for mono and stereo input.
+        n_total = _n_samples(y)
         # Each bucket: (name, shortest_ms, longest_ms)
         BUCKETS = [
             ("stutter",  5.0,    30.0),    # audio-rate glitch blips
@@ -311,7 +406,7 @@ def detect_slice_points(
         pos = 0
         # Track per-bucket counts so we can print a diagnostic at the end.
         cat_counts = {"stutter": 0, "chop": 0, "held": 0}
-        while pos < len(y):
+        while pos < n_total:
             # Randomly pick a bucket with uniform probability (⅓ each).
             name, lo_ms, hi_ms = random.choice(BUCKETS)
             # Log-uniform sample within the bucket: equal probability for each
@@ -321,7 +416,7 @@ def detect_slice_points(
             # the envelope crossfade has at least a few samples to work with.
             dur_samples = max(220, int(sr * dur_ms / 1000.0))
             pos += dur_samples
-            if pos < len(y):
+            if pos < n_total:
                 positions.append(pos)
                 cat_counts[name] += 1
 
@@ -358,10 +453,17 @@ def detect_slice_points(
     # the estimate from the audio.  It just won't jump to a harmonically
     # related wrong octave (e.g. detecting 70 instead of 140 BPM on a
     # half-time groove with a very clear snare on beat 3).
+    #
+    # Channel handling (ADR-0021): librosa.beat.beat_track interprets a 2-D
+    # input as a multichannel onset envelope, which is NOT what we want for
+    # tempo estimation.  We pass a mono mixdown via _to_mono(); the slice
+    # positions returned still apply correctly to the original stereo array
+    # because they're sample indices along the (shared) time axis.
+    y_mono_for_detection = _to_mono(y)
     try:
         _kw = {"start_bpm": float(bpm_override)} if bpm_override else {}
         tempo, beat_frames = librosa.beat.beat_track(
-            y=y, sr=sr, trim=False, **_kw
+            y=y_mono_for_detection, sr=sr, trim=False, **_kw
         )
         # tempo is sometimes returned as a 0-d or 1-element array — flatten.
         bpm = float(np.atleast_1d(tempo)[0])
@@ -442,7 +544,8 @@ def detect_slice_points(
             spacing = int(np.median(np.diff(grid_pts)))
             spacing = max(spacing, MIN_SAMPLES)   # never shrink below floor
             pos = grid_pts[-1] + spacing
-            while pos < len(y):
+            n_total = _n_samples(y)
+            while pos < n_total:
                 grid_pts.append(pos)
                 pos += spacing
 
@@ -472,7 +575,7 @@ def detect_slice_points(
         #   = (samples per minute) / bpm / subdivisions_per_beat
         #   = sr * 60 / bpm / subdivs
         samples_per_slice = max(MIN_SAMPLES, int(sr * 60.0 / bpm / subdivs))
-        grid_points   = np.arange(0, len(y), samples_per_slice, dtype=np.int64)
+        grid_points   = np.arange(0, _n_samples(y), samples_per_slice, dtype=np.int64)
         median_spacing = samples_per_slice
 
     # If transient_sensitivity is essentially zero, skip onset detection
@@ -490,7 +593,11 @@ def detect_slice_points(
     # surrounding noise floor.  Lower delta = more sensitive = more onsets.
     delta = max(0.01, 0.3 * (1.0 - transient_sensitivity))
     try:
-        onset_frames  = librosa.onset.onset_detect(y=y, sr=sr, delta=delta, backtrack=True)
+        # librosa.onset.onset_detect, like beat_track, expects mono input.
+        # Reuse the mixdown computed above for tempo estimation (ADR-0021).
+        onset_frames  = librosa.onset.onset_detect(
+            y=y_mono_for_detection, sr=sr, delta=delta, backtrack=True,
+        )
         onset_samples = librosa.frames_to_samples(onset_frames)
     except Exception:
         onset_samples = np.array([], dtype=np.int64)
@@ -542,10 +649,16 @@ def apply_envelope(slice_audio: np.ndarray, sr: int, envelope_ms: float) -> np.n
     fade length is capped at half the slice length so the fades don't
     overlap and cancel each other out.
 
+    Channel handling (ADR-0021): accepts both 1-D mono and 2-D
+    (channels, n) stereo arrays.  The fade is applied along the time
+    axis (last axis) and broadcasts across all channels — both L and R
+    fade together by the same amount.
+
     Parameters
     ----------
     slice_audio : np.ndarray
-        1-D float32 audio for a single slice.
+        Float32 audio for a single slice.  Shape (n,) for mono or
+        (channels, n) for stereo.
     sr : int
         Sample rate in Hz.
     envelope_ms : float
@@ -555,15 +668,18 @@ def apply_envelope(slice_audio: np.ndarray, sr: int, envelope_ms: float) -> np.n
     Returns
     -------
     np.ndarray
-        The slice with fade-in and fade-out applied.  Same length as input.
+        The slice with fade-in and fade-out applied.  Same shape as input.
     """
     # If envelope is zero or the slice is too short to fade, pass through.
-    if envelope_ms <= 0 or len(slice_audio) < 4:
+    # Use _n_samples (the time-axis length) — len() would return the
+    # channel count for a 2-D array.
+    n_samples = _n_samples(slice_audio)
+    if envelope_ms <= 0 or n_samples < 4:
         return slice_audio
 
     # How many samples to use for the fade.
     # Capped at half the slice so fade_in and fade_out never overlap.
-    n_fade = min(int(sr * envelope_ms / 1000.0), len(slice_audio) // 2)
+    n_fade = min(int(sr * envelope_ms / 1000.0), n_samples // 2)
     if n_fade < 2:
         return slice_audio  # too short for even a 2-sample ramp
 
@@ -572,9 +688,11 @@ def apply_envelope(slice_audio: np.ndarray, sr: int, envelope_ms: float) -> np.n
     fade_out = np.linspace(1.0, 0.0, n_fade, dtype=np.float32)
 
     # Operate on a copy so we don't mutate the caller's array.
+    # Ellipsis indexing applies the multiply along the last axis only,
+    # broadcasting the 1-D fade across the channel dimension for stereo.
     out = slice_audio.copy()
-    out[:n_fade]  *= fade_in
-    out[-n_fade:] *= fade_out
+    out[..., :n_fade]  *= fade_in
+    out[..., -n_fade:] *= fade_out
     return out
 
 
@@ -761,12 +879,17 @@ def slurmify(
     # ── Step 0: optional trim ───────────────────────────────────────────────
     # The user can specify a start and end time to work on a subsection of
     # the audio.  end_sec=0 means "use the full file" (default).
+    #
+    # Channel handling (ADR-0021): use _n_samples(y) for the length and
+    # ellipsis indexing (y[..., a:b]) so this works for both 1-D mono
+    # arrays and 2-D (channels, n) stereo arrays.
+    n_total      = _n_samples(y)
     start_sample = int(max(0.0, start_sec) * sr)
-    end_sample   = int(end_sec * sr) if end_sec > 0.0 and end_sec > start_sec else len(y)
-    end_sample   = min(end_sample, len(y))    # never exceed actual length
-    if start_sample > 0 or end_sample < len(y):
-        y = y[start_sample:end_sample]
-    if len(y) == 0:
+    end_sample   = int(end_sec * sr) if end_sec > 0.0 and end_sec > start_sec else n_total
+    end_sample   = min(end_sample, n_total)    # never exceed actual length
+    if start_sample > 0 or end_sample < n_total:
+        y = y[..., start_sample:end_sample]
+    if _n_samples(y) == 0:
         raise ValueError(
             "In/out range is empty — check your start and end times."
         )
@@ -777,16 +900,27 @@ def slurmify(
         # pyrubberband time-stretches the audio while preserving pitch.
         # It calls the rubberband CLI binary (bundled in the .app).
         # speed > 1 = faster (shorter output); speed < 1 = slower (longer).
-        y = pyrb.time_stretch(y, sr, speed)
+        # _stereo_pyrb handles the (channels, n) ↔ (n, channels) transpose
+        # at the boundary — pyrb expects channels-LAST, slurmcore is
+        # channels-FIRST (ADR-0021).
+        y = _stereo_pyrb(pyrb.time_stretch, y, sr, speed)
     else:
         # Simple linear resample = "chipmunk mode": pitch goes up with speed,
         # down with slower playback.  Fast but musically interesting.
-        new_len = max(1, int(len(y) / speed))
-        y = np.interp(
-            np.linspace(0, len(y) - 1, new_len),
-            np.arange(len(y)),
-            y,
-        ).astype(np.float32)
+        # For stereo, interpolate each channel independently along the time
+        # axis so the L/R pair stays synchronized.
+        n_in    = _n_samples(y)
+        new_len = max(1, int(n_in / speed))
+        xs      = np.linspace(0, n_in - 1, new_len)
+        src_xs  = np.arange(n_in)
+        if y.ndim == 1:
+            y = np.interp(xs, src_xs, y).astype(np.float32)
+        else:
+            # (channels, n) — np.interp only handles 1-D, so loop per channel
+            # and stack back into the channels-first shape.
+            y = np.stack(
+                [np.interp(xs, src_xs, y[ch]) for ch in range(y.shape[0])]
+            ).astype(np.float32)
 
     # ── Step 1b: independent pitch shift ────────────────────────────────────
     # Skipped when semitones == 0 to avoid a redundant rubberband pass.
@@ -794,7 +928,9 @@ def slurmify(
     # (you can double the speed AND shift pitch down by a fifth).
     if pitch_shift_semitones != 0.0:
         _prog(0.28, "Shifting pitch…")
-        y = pyrb.pitch_shift(y, sr, pitch_shift_semitones)
+        # _stereo_pyrb again — pyrb.pitch_shift has the same shape contract
+        # as time_stretch, so the same wrapper applies.
+        y = _stereo_pyrb(pyrb.pitch_shift, y, sr, pitch_shift_semitones)
 
     _prog(0.40, "Finding slice points…")
     # ── Step 2: find slice points ────────────────────────────────────────────
@@ -848,14 +984,18 @@ def slurmify(
 
     _prog(0.50, "Slicing…")
     # ── Step 3: cut into slices ──────────────────────────────────────────────
+    # Ellipsis indexing (y[..., a:b]) selects along the LAST axis only —
+    # i.e. the time axis — for both 1-D mono and 2-D (channels, n) stereo.
+    # Each element of `slices` therefore has the same channel layout as y.
     slices = []
     for i in range(len(slice_points) - 1):
         start, end = int(slice_points[i]), int(slice_points[i + 1])
         if end > start:
-            slices.append(y[start:end])
+            slices.append(y[..., start:end])
     # Tail: any audio after the last slice point.
-    if slice_points[-1] < len(y):
-        slices.append(y[int(slice_points[-1]):])
+    n_total_y = _n_samples(y)
+    if slice_points[-1] < n_total_y:
+        slices.append(y[..., int(slice_points[-1]):])
 
     # ── Step 3b: beat mask filtering (optional) ─────────────────────────────
     # The beat mask is a list of N booleans where N = number of note-
@@ -884,10 +1024,16 @@ def slurmify(
 
     _prog(0.60, "Processing slices…")
     # ── Step 4: per-slice transformations ───────────────────────────────────
+    # All operations here are channel-aware (ADR-0021):
+    #   • length checks use _n_samples(s), NOT len(s)
+    #   • slicing along time uses s[..., a:b], NOT s[a:b]
+    #   • reverse uses s[..., ::-1], NOT s[::-1]
+    #   • np.tile with a 2-D array uses (1, n) so only the time axis
+    #     repeats, leaving channels intact
     processed: list[np.ndarray] = []
     n_slices = len(slices)
     for idx, s in enumerate(slices):
-        if len(s) < 4:
+        if _n_samples(s) < 4:
             # Slice is too short to do anything useful with.
             continue
 
@@ -908,15 +1054,15 @@ def slurmify(
         #       Remove the last N ms.  Shortens the decay/tail.  Makes the
         #       output tighter and more staccato.  At high values the slice
         #       ends abruptly after the initial attack — a hard chop style.
-        if beat_trim_start_ms > 0 and len(s) > 4:
-            trim_n = min(int(sr * beat_trim_start_ms / 1000.0), len(s) - 4)
+        if beat_trim_start_ms > 0 and _n_samples(s) > 4:
+            trim_n = min(int(sr * beat_trim_start_ms / 1000.0), _n_samples(s) - 4)
             if trim_n > 0:
-                s = s[trim_n:]
-        if beat_trim_end_ms > 0 and len(s) > 4:
-            trim_n = min(int(sr * beat_trim_end_ms / 1000.0), len(s) - 4)
+                s = s[..., trim_n:]
+        if beat_trim_end_ms > 0 and _n_samples(s) > 4:
+            trim_n = min(int(sr * beat_trim_end_ms / 1000.0), _n_samples(s) - 4)
             if trim_n > 0:
-                s = s[:-trim_n]
-        if len(s) < 4:
+                s = s[..., :-trim_n]
+        if _n_samples(s) < 4:
             # Trim ate almost the whole slice — nothing useful left.
             continue
 
@@ -925,8 +1071,11 @@ def slurmify(
 
         # 4c. Random reverse: flip the slice's time axis.
         #     Probability controlled by reverse_chance (0 = never, 1 = always).
+        #     For stereo, s[..., ::-1] reverses ONLY the time axis — the L/R
+        #     channels stay in their respective positions, just played
+        #     backwards together.
         if reverse_chance > 0 and random.random() < reverse_chance:
-            s = s[::-1].copy()   # copy() detaches from the original slice view
+            s = s[..., ::-1].copy()   # copy() detaches from the original slice view
 
         # 4d. Stutter / repeat.
         #     Two modes, controlled by stutter_skip_ms:
@@ -957,15 +1106,24 @@ def slurmify(
 
                 # Convert ms → samples; 5 ms minimum.
                 head_n = max(int(sr * 0.005), int(sr * eff_ms / 1000.0))
-                head_n = min(head_n, len(s))
+                head_n = min(head_n, _n_samples(s))
 
                 # Apply the envelope to the head independently so each
                 # repeated head starts and ends cleanly.
-                head = apply_envelope(s[:head_n], sr, envelope_ms)
-                s    = np.tile(head, actual_reps)
+                head = apply_envelope(s[..., :head_n], sr, envelope_ms)
+                # np.tile shape rule: for 1-D, np.tile(x, n) repeats n times.
+                # For 2-D (channels, n_samples), we need (1, n) so the time
+                # axis repeats while channel dimension stays the same.
+                if head.ndim == 1:
+                    s = np.tile(head, actual_reps)
+                else:
+                    s = np.tile(head, (1, actual_reps))
             else:
                 # Classic mode: tile the full (already-enveloped) slice.
-                s = np.tile(s, actual_reps)
+                if s.ndim == 1:
+                    s = np.tile(s, actual_reps)
+                else:
+                    s = np.tile(s, (1, actual_reps))
 
         processed.append(s)
 
@@ -998,13 +1156,16 @@ def slurmify(
     # last slice (no trailing silence).
     if beat_gap_ms > 0 and len(processed) > 1:
         gap_n  = int(sr * beat_gap_ms / 1000.0)
-        # n_channels: 1 for mono, 2 for stereo — match the shape of the slices.
-        n_ch   = processed[0].shape[0] if processed[0].ndim == 2 else None
-        silence = (
-            np.zeros((n_ch, gap_n), dtype=np.float32)
-            if n_ch is not None
-            else np.zeros(gap_n, dtype=np.float32)
-        )
+        # Build a silence block matching the channel layout of the slices.
+        # ndim == 1 → mono, shape (gap_n,)
+        # ndim == 2 → stereo, shape (channels, gap_n)
+        # Channel count is taken from processed[0] — all slices share the
+        # same channel layout because they were carved from the same `y`.
+        if processed[0].ndim == 2:
+            n_ch    = processed[0].shape[0]
+            silence = np.zeros((n_ch, gap_n), dtype=np.float32)
+        else:
+            silence = np.zeros(gap_n, dtype=np.float32)
         spaced: list[np.ndarray] = []
         for i, s in enumerate(processed):
             spaced.append(s)
@@ -1018,13 +1179,18 @@ def slurmify(
         # audio rather than an empty array.
         out = y
     else:
-        out = np.concatenate(processed)
+        # axis=-1 selects the time axis: works as axis=0 for 1-D mono, and
+        # as axis=1 for 2-D (channels, n) stereo, joining slices end-to-end
+        # without disturbing the channel dimension.
+        out = np.concatenate(processed, axis=-1)
 
     # ── Step 8: soft normalize to –1 dBFS ──────────────────────────────────
     # After stutter tiling, amplitude can pile up significantly.  Normalise
     # to 0.891× peak (≈ –1 dBFS) so we stay just below clipping without
     # imposing a hard limiter.  If the output is silence (peak == 0), skip.
-    peak = float(np.max(np.abs(out))) if len(out) else 0.0
+    # Use _n_samples for the emptiness check — len(out) on a 2-D stereo
+    # array returns the channel count (truthy even for empty audio).
+    peak = float(np.max(np.abs(out))) if _n_samples(out) > 0 else 0.0
     if peak > 0:
         out = (out / peak * 0.891).astype(np.float32)  # –1 dBFS ceiling
 

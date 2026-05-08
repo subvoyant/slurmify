@@ -22,7 +22,7 @@ audio. Distributed as a code-signed, notarized macOS `.app` inside a
 `.dmg`.
 
 Current version: see `__version__` in `slurm_ui.py` and the matching
-`<div class="slurm-tag">` in `build_ui()` (truth copy is `build.sh`'s `VERSION="0.1.5"`).
+`<div class="slurm-tag">` in `build_ui()` (truth copy is `build.sh`'s `VERSION="0.1.6"`).
 
 ---
 
@@ -93,7 +93,10 @@ slurmio.py   — filesystem IO               (Phase 3 — ADR-0017)
 | `# Audio input` | **slurmio.py** | `SUPPORTED_EXTS`, `TARGET_SR`, `load_audio` |
 | `# Audio output` | **slurmio.py** | `_SF_FORMATS`, `_FFMPEG_FORMATS`, `_write_audio` |
 | `def _note_to_ms(` | **slurmcore.py** | musical note → ms helper (ADR-0020); accepts `1/N`, `1/N.`, `1/NT`, `1`, `2`. Returns 0.0 for invalid input. |
-| `def detect_slice_points(` | **slurmcore.py** | beat-grid + transient-snap slice-point engine (MAX RANDOM trimodal — ADR-0012). Now returns `(positions, effective_bpm)` so slurmify can use the same BPM for note→ms conversion (ADR-0020) |
+| `def _n_samples(` | **slurmcore.py** | shape-agnostic sample count helper (ADR-0021) — returns `y.shape[-1]`. Use this everywhere instead of `len(y)`. |
+| `def _to_mono(` | **slurmcore.py** | 1-D mixdown helper for librosa beat/onset detection (ADR-0021). Pass-through for already-mono input. |
+| `def _stereo_pyrb(` | **slurmcore.py** | wraps pyrubberband calls with the `(channels, n)` ↔ `(n, channels)` transpose at the slurmcore boundary (ADR-0021). |
+| `def detect_slice_points(` | **slurmcore.py** | beat-grid + transient-snap slice-point engine (MAX RANDOM trimodal — ADR-0012). Now returns `(positions, effective_bpm)` so slurmify can use the same BPM for note→ms conversion (ADR-0020). Uses `_to_mono(y)` for librosa beat/onset detection (ADR-0021). |
 | `DEFAULT_BPM = 120.0` | **slurmcore.py** | the BPM fallback when neither detection nor override is available (used in MAX RANDOM and on librosa failure). Mirrored as the JS hint fallback in INIT_JS. |
 | `def apply_envelope(` | **slurmcore.py** | per-slice fade-in/out (anti-click) |
 | `def slurmify(` | **slurmcore.py** | main DSP pipeline (trim → stretch → slice → per-slice FX → concat → normalize); takes `(y, sr)` → returns `(ndarray, int)` — ADR-0016. Accepts four optional `*_note` params that override the matching `*_ms` when non-empty (ADR-0020). |
@@ -365,6 +368,9 @@ the ffmpeg encode branch) **in `slurmio.py`**. Add it to the `output_format`
 | Single-BPM rule | [0020](docs/adr/0020-note-mode-time-parameters.md) | The BPM passed to `_note_to_ms` MUST equal the BPM `detect_slice_points` used. That's why detect_slice_points returns `(positions, bpm)` — DO NOT recompute BPM elsewhere in slurmify. |
 | Note-mode UI trios | [0020](docs/adr/0020-note-mode-time-parameters.md) | Each musical slider has 4 components (ms slider + note dropdown + mode radio + hint div) — adding/removing/reordering any breaks the visibility-swap handlers, the live-hint JS, the localStorage keys, AND the click-chain input ordering. Touch all 4 together. |
 | Note-mode JS / Python parity | [0020](docs/adr/0020-note-mode-time-parameters.md) | `_slurmNoteToMs` (JS in ui_assets.py) and `_note_to_ms` (Python in slurmcore.py) must produce identical results for the same input. If you change the grammar in one, change the other in the same commit — otherwise the hint and the slurm output disagree. |
+| Channel-layout convention | [0021](docs/adr/0021-stereo-end-to-end.md) | Slurmcore uses (channels, n). soundfile + pyrubberband use (n, channels). Transposes happen at module boundaries — process()→_write_audio, burn_fx→_write_audio, slurmify↔pyrb (via `_stereo_pyrb`). NEVER assume y is 1-D inside slurmcore. |
+| Mono mixdown for librosa detection | [0021](docs/adr/0021-stereo-end-to-end.md) | librosa.beat.beat_track and librosa.onset.onset_detect interpret 2-D input differently than we want. ALWAYS pass `_to_mono(y)` to those functions. The detected positions still apply to the original stereo array (they're sample indices on the time axis). |
+| Use _n_samples, never len(y) | [0021](docs/adr/0021-stereo-end-to-end.md) | `len(y)` returns the channel count for a 2-D array — almost never what you want. Use `_n_samples(y)` (= `y.shape[-1]`) for the time-axis length so code works for both mono and stereo. |
 
 ---
 
@@ -436,4 +442,4 @@ the codebase has drifted from a state that was previously well-mapped.
 
 ---
 
-*Last updated: 2026-05-07 · v0.1.5 · Note-mode time parameters — per-slider ms ⇄ ♪ toggle (ADR-0020)*
+*Last updated: 2026-05-07 · v0.1.6 · Stereo end-to-end through the slurmify pipeline (ADR-0021)*
