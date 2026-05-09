@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Slurmify Tauri 2 entitlements (ADR-0022).
+
+        Required by macOS hardened runtime so the .app can:
+          • spawn the PyInstaller-built Python sidecar as a child process
+          • the sidecar in turn loads numpy / soundfile / librosa native extensions
+          • the sidecar opens a localhost HTTP server (FastAPI on 127.0.0.1)
+          • the frontend / sidecar make outbound HTTP calls (none in v0.2.0
+            but the network.client entitlement keeps the door open for
+            future updater / telemetry features without re-signing)
+
+        Without disable-library-validation, the spawned sidecar fails to
+        load its dynamic libraries because they're signed with a different
+        identity (or unsigned at all, in dev mode).  This is the standard
+        mitigation for Tauri+PyInstaller setups.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- The sidecar runs a localhost HTTP server (FastAPI). -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- The frontend may fetch audio files from /files/{id} on localhost. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

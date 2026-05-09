@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    /* TypeScript settings for the build-tooling code (vite.config.ts)
+     * which runs under Node, not in the browser. */
+    "target":              "ES2022",
+    "lib":                 ["ES2023"],
+    "module":              "ESNext",
+    "skipLibCheck":        true,
+
+    "moduleResolution":     "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules":       true,
+    "moduleDetection":       "force",
+    "noEmit":                true,
+
+    "strict":                          true,
+    "noUnusedLocals":                  true,
+    "noUnusedParameters":              true,
+    "noFallthroughCasesInSwitch":      true,
+    "noUncheckedSideEffectImports":    true
+  },
+  "include": ["vite.config.ts"]
+}

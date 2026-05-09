@@ -1,0 +1,67 @@
+# ──────────────────────────────────────────────────────────────────────────
+# src-python/pyproject.toml — Slurmify backend (FastAPI sidecar)
+# ──────────────────────────────────────────────────────────────────────────
+# This is the dependency manifest for the Tauri sidecar process introduced
+# in v0.2.0 (ADR-0022).  The sidecar exposes slurmcore + slurmio via a
+# small REST API consumed by the React frontend.
+#
+# Why is this a separate pyproject.toml from the project root?
+#   • The sidecar runs in its own (PyInstaller-bundled) Python interpreter
+#     and only needs HTTP + DSP deps — no Gradio, no Tauri, nothing
+#     UI-related.  Splitting the manifest keeps PyInstaller's static
+#     analysis fast and the bundle small.
+#   • The project root will eventually own the Node/pnpm side
+#     (package.json) for the Tauri shell + React frontend.  Two manifests
+#     reflects two distinct toolchains.
+#
+# Existing v0.1.6 deps (librosa, pyrubberband, soundfile, numpy, scipy)
+# are inherited from the user's existing .venv — they are listed here so
+# PyInstaller can resolve them when building the sidecar binary.
+# ──────────────────────────────────────────────────────────────────────────
+
+[project]
+name = "slurmify-backend"
+version = "0.2.0"
+description = "Subvoyant SIENA Slurmer FastAPI backend (Tauri sidecar)"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Subvoyant", email = "software@subvoyant.com" }]
+
+dependencies = [
+  # ── Web layer ────────────────────────────────────────────────────────
+  # Same ASGI engine Gradio uses internally — proven on this stack.
+  "fastapi>=0.115",
+  # ASGI runner.  Stdlib of the FastAPI world.
+  "uvicorn[standard]>=0.32",
+  # SSE streaming for /jobs/{id}/progress (one-way, simpler than WebSocket).
+  "sse-starlette>=2.1",
+  # Form data / multipart parsing — required by FastAPI for UploadFile.
+  "python-multipart>=0.0.12",
+
+  # ── DSP layer (inherited from v0.1.6) ────────────────────────────────
+  # All of these are already in the user's .venv from v0.1.6; listed
+  # here so PyInstaller's analysis sees them at sidecar-build time.
+  "librosa>=0.10",
+  "pyrubberband>=0.3",
+  "soundfile>=0.12",
+  "numpy>=1.26",
+  "scipy>=1.12",
+]
+
+# Optional dev deps — not bundled into the PyInstaller binary.
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27",        # for testing the API via real HTTP requests
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+# Setuptools wants this to know what to install.  The sidecar isn't a
+# library — it's an entrypoint script — so we just point it at server.py.
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "jobs"]
+packages   = ["api"]

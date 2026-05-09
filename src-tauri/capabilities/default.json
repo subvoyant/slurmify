@@ -1,0 +1,14 @@
+{
+  "$schema":     "../gen/schemas/desktop-schema.json",
+  "identifier":  "default",
+  "description": "Default capabilities for the Slurmify main window. Custom #[tauri::command] handlers (read_backend_discovery, reveal_in_finder) are auto-allowed by core:default — no separate entry needed.",
+  "windows":     ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-temp-read",
+    "dialog:default"
+  ]
+}

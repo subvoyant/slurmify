@@ -1,0 +1,53 @@
+# ──────────────────────────────────────────────────────────────────────
+# src-tauri/Cargo.toml — Rust shell for the Slurmify Tauri 2 app
+# ──────────────────────────────────────────────────────────────────────
+#
+# The Rust side of Tauri is intentionally minimal in v0.2.0.  Phase A
+# (this scaffold) doesn't even spawn the Python sidecar yet — the user
+# runs `python src-python/server.py` in another terminal during dev.
+# Phase D wires up sidecar spawning via `tauri-plugin-shell`.
+#
+# Dependency philosophy:
+#   • tauri-plugin-shell  → child process spawning (Python sidecar)
+#   • tauri-plugin-fs     → reading the discovery file
+#   • tauri-plugin-dialog → native file save-as dialogs (W5)
+#   • serde + serde_json  → parsing the sidecar's stdout JSON ready line
+# ──────────────────────────────────────────────────────────────────────
+
+[package]
+name        = "slurmify"
+version     = "0.2.0"
+description = "Subvoyant SIENA Slurmer (ADR-0022 — Tauri shell)"
+authors     = ["Subvoyant <software@subvoyant.com>"]
+edition     = "2021"
+license     = "GPL-3.0-or-later"
+
+[lib]
+# Tauri 2's recommended layout: most logic in lib.rs so it can be
+# built into both the binary AND a library (for mobile in the future).
+# main.rs is just a thin entry that calls into lib.rs::run().
+name       = "slurmify_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri              = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-fs    = "2"
+tauri-plugin-dialog = "2"
+
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ── Profile tweaks ─────────────────────────────────────────────────────
+# Release builds: small binary, no debug symbols.  Tauri 2's defaults
+# are sensible; this section is here to make a future tweak (LTO, etc.)
+# explicit if we need it.
+[profile.release]
+panic     = "abort"
+codegen-units = 1
+lto       = true
+opt-level = "s"
+strip     = true

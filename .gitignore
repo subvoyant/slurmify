@@ -58,3 +58,28 @@ notarize_creds.sh
 # Graphics source — large binaries; reference gifs are base64-inlined into ui_assets.py
 graphic/
 DMG_builds/
+
+# ── Tauri 2 + React frontend (v0.2.0, ADR-0022) ────────────────────────
+# Node / pnpm
+node_modules/
+.pnpm-store/
+pnpm-debug.log*
+
+# Vite build output (the dist/ entry above already covers this for the
+# Python side; explicit here for clarity since the meaning is different)
+# dist/        # already covered by the Python section
+
+# Tauri / Rust artifacts
+src-tauri/target/
+src-tauri/gen/
+.cargo/
+# Cargo.lock IS tracked — Tauri docs recommend it for apps (deterministic
+# builds across machines).  See https://doc.rust-lang.org/cargo/faq.html#why-have-cargolock-in-version-control
+
+# Local backend discovery file (server.py writes /tmp/slurmify-backend.json)
+.slurmify-backend.json
+slurmify-backend.json
+
+# Dev-only commit message scratch files
+.commit_v*_msg.txt
+

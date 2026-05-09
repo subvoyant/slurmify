@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en" data-skin="default">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SIENA Slurmer</title>
+  </head>
+  <body>
+    <!--
+      The data-skin attribute on <html> drives all skin-variant CSS rules
+      (matches v0.1.6 ADR-0007 — same convention, same localStorage key
+      "slurm_skin").  src/main.tsx restores the saved skin on boot.
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

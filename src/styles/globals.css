@@ -1,0 +1,209 @@
+/* ─────────────────────────────────────────────────────────────────
+ * src/styles/globals.css — Tailwind directives + skin variables
+ * ─────────────────────────────────────────────────────────────────
+ *
+ * Layout:
+ *   1. Tailwind's three directives expand into the utility class set.
+ *   2. @layer base sets up CSS variables (the source of truth for
+ *      both the slurm brand palette AND shadcn's semantic tokens).
+ *   3. Per-skin variable overrides live in :root[data-skin="…"]
+ *      blocks (Phase C2 will add `acid` and `hardware`; for C1 we
+ *      ship only `default`).
+ *   4. Body / html base styles.
+ *
+ * Variable naming:
+ *   --slurm-*       hex color values, brand palette
+ *   --background    HSL triplet for shadcn (no "hsl()" wrapper)
+ *   --foreground    same
+ *   --primary       same
+ *   --radius        single radius for shadcn primitives (we use 6px)
+ *
+ * The HSL tokens for shadcn are kept in sync with the slurm hex
+ * palette by hand.  When you change a brand color, update both:
+ *   #00b9e1 (cyan) → 192 100% 44% (HSL form)
+ * Tools: https://hslpicker.com/ or `pbpaste | npx culori-convert`.
+ *
+ * Why two systems?  See the comment at the top of tailwind.config.ts.
+ * ───────────────────────────────────────────────────────────────── */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ── Default skin (subvoyant · default) ──────────────────────── */
+  :root,
+  :root[data-skin="default"] {
+    /* Slurm brand palette (hex form) */
+    --slurm-bg:         #0e0c0c;
+    --slurm-fg:         #cdc6c6;
+    --slurm-muted:      #7a7070;
+    --slurm-cyan:       #00b9e1;
+    --slurm-orange:     #ffa600;
+    --slurm-rose:       #a09090;
+    --slurm-surface:    #161314;
+    --slurm-surface2:   #1e1a1b;
+    --slurm-border:     #2a2323;
+    --slurm-border-2:   #342c2c;
+    --slurm-ok:         #00d36e;
+    --slurm-warn:       #ffa600;
+    --slurm-danger:     #e8474c;
+
+    /* shadcn semantic tokens (HSL form: H S% L%, no comma, no hsl()) */
+    --background:               0 4% 5%;       /* slurm-bg */
+    --foreground:               0 5% 79%;      /* slurm-fg */
+
+    --card:                     340 6% 9%;     /* slurm-surface */
+    --card-foreground:          0 5% 79%;
+
+    --popover:                  340 6% 9%;
+    --popover-foreground:       0 5% 79%;
+
+    --primary:                  192 100% 44%;  /* slurm-cyan */
+    --primary-foreground:       0 4% 5%;       /* on cyan, use bg color */
+
+    --secondary:                340 5% 11%;    /* slurm-surface2 */
+    --secondary-foreground:     0 5% 79%;
+
+    --muted:                    340 5% 11%;
+    --muted-foreground:         0 5% 50%;
+
+    --accent:                   192 100% 44%;
+    --accent-foreground:        0 4% 5%;
+
+    --destructive:              357 78% 60%;   /* slurm-danger */
+    --destructive-foreground:   0 5% 95%;
+
+    --border:                   0 9% 15%;      /* slurm-border */
+    --input:                    0 9% 15%;
+    --ring:                     192 100% 44%;  /* primary glow on focus */
+
+    --radius: 6px;
+  }
+
+  /* ── Acid skin (psychedelic mint + hot-pink) ────────────────── */
+  /* Inspired by v0.1.6's "acid cathedral" — glowing mint as the
+   * primary, hot-pink accent, deep teal-tinted bg.  Phase D will
+   * layer on the more elaborate effects (animated hue-rotation on
+   * the title, glassmorphic backdrop-blur on cards, etc.); for C2
+   * the COLOR shift alone is the bulk of the visual difference. */
+  :root[data-skin="acid"] {
+    --slurm-bg:         #051410;
+    --slurm-fg:         #b0f5e0;
+    --slurm-muted:      #5a8a7a;
+    --slurm-cyan:       #00ffc8;   /* the new "primary" — bright mint */
+    --slurm-orange:     #ff00d6;   /* hot pink replaces orange */
+    --slurm-rose:       #6affd0;
+    --slurm-surface:    #0a2018;
+    --slurm-surface2:   #102f25;
+    --slurm-border:     #1a4a3a;
+    --slurm-border-2:   #266a55;
+    --slurm-ok:         #00ffc8;
+    --slurm-warn:       #ffb800;
+    --slurm-danger:     #ff4080;
+
+    --background:           165 65% 6%;
+    --foreground:           160 70% 82%;
+    --card:                 165 50% 8%;
+    --card-foreground:      160 70% 82%;
+    --popover:              165 50% 8%;
+    --popover-foreground:   160 70% 82%;
+    --primary:              165 100% 50%;   /* mint */
+    --primary-foreground:   165 65% 6%;
+    --secondary:            165 40% 13%;
+    --secondary-foreground: 160 70% 82%;
+    --muted:                165 40% 13%;
+    --muted-foreground:     160 30% 50%;
+    --accent:               320 100% 50%;   /* hot pink */
+    --accent-foreground:    160 70% 82%;
+    --destructive:          340 100% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border:               165 50% 19%;
+    --input:                165 50% 19%;
+    --ring:                 165 100% 50%;
+  }
+
+  /* ── Hardware skin (vintage analog rack — LED amber on black) ── */
+  /* Inspired by v0.1.6's "hardware rack" — brushed-metal panels with
+   * monospace LCD readouts.  Color palette: warm LED amber as the
+   * primary, LED green for "active" highlights, deep black bg.
+   * Phase D will add the brushed-metal panel textures + faux brass
+   * screws; the color shift carries most of the personality. */
+  :root[data-skin="hardware"] {
+    --slurm-bg:         #060606;
+    --slurm-fg:         #ffb838;   /* warm LED amber as default text */
+    --slurm-muted:      #6a5530;
+    --slurm-cyan:       #00c040;   /* LED green — new "primary" */
+    --slurm-orange:     #ffb838;   /* LED amber */
+    --slurm-rose:       #ff8800;
+    --slurm-surface:    #0e0e0e;
+    --slurm-surface2:   #1a1500;
+    --slurm-border:     #2a1f00;
+    --slurm-border-2:   #4a3700;
+    --slurm-ok:         #00c040;
+    --slurm-warn:       #ffb838;
+    --slurm-danger:     #ff3030;
+
+    --background:           0 0% 2%;
+    --foreground:           38 100% 60%;
+    --card:                 0 0% 6%;
+    --card-foreground:      38 100% 60%;
+    --popover:              0 0% 6%;
+    --popover-foreground:   38 100% 60%;
+    --primary:              130 100% 38%;   /* LED green */
+    --primary-foreground:   0 0% 2%;
+    --secondary:            45 100% 8%;
+    --secondary-foreground: 38 100% 60%;
+    --muted:                45 100% 8%;
+    --muted-foreground:     38 60% 40%;
+    --accent:               38 100% 60%;
+    --accent-foreground:    0 0% 2%;
+    --destructive:          0 100% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border:               45 100% 8%;
+    --input:                45 100% 8%;
+    --ring:                 130 100% 38%;
+  }
+
+  /* Hardware skin uses monospace globally for the LCD aesthetic.
+   * Default + acid stay sans-serif. */
+  :root[data-skin="hardware"] body {
+    font-family: theme("fontFamily.mono");
+  }
+
+  /* ── Base element styles ────────────────────────────────────── */
+
+  * {
+    /* shadcn convention: use the semantic border token for any
+     * default border so skin switches affect everything uniformly. */
+    border-color: hsl(var(--border));
+  }
+
+  html, body, #root {
+    background-color: var(--slurm-bg);
+    color: var(--slurm-fg);
+    min-height: 100%;
+  }
+
+  body {
+    font-family: theme("fontFamily.sans");
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Disable text selection by default — feels more "app-like"; we'll
+     * re-enable selectively on text-displaying components (filenames,
+     * descriptions) where users might want to copy. */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* Allow selection inside form controls and explicit .selectable spans */
+  input, textarea, [contenteditable], .selectable {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  /* Tauri webview niceties — disable the native context menu in
+   * production but keep it in dev mode (so we can right-click → Inspect).
+   * The simplest cross-platform way: only block when not localhost.
+   * For now we always allow it; tighten in the W6 polish pass. */
+}

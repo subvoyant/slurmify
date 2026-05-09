@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    /* TypeScript settings for the React app code under src/.
+     * Mirrors the standard Vite + React 19 + TS scaffold but with our
+     * `@/*` path alias so imports look like `import { Foo } from "@/components/Foo"`.
+     */
+    "target":            "ES2022",
+    "useDefineForClassFields": true,
+    "lib":               ["ES2022", "DOM", "DOM.Iterable"],
+    "module":            "ESNext",
+    "skipLibCheck":      true,
+
+    /* Bundler mode — Vite resolves modules itself; tsc just type-checks. */
+    "moduleResolution":     "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules":       true,
+    "moduleDetection":       "force",
+    "noEmit":                true,
+    "jsx":                   "react-jsx",
+
+    /* Strictness — type all the things. */
+    "strict":                          true,
+    "noUnusedLocals":                  true,
+    "noUnusedParameters":              true,
+    "noFallthroughCasesInSwitch":      true,
+    "noUncheckedSideEffectImports":    true,
+
+    /* @/* → src/* — also configured in vite.config.ts (must match). */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"]
+}
