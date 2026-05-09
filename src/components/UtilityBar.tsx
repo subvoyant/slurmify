@@ -163,14 +163,24 @@ export function UtilityBar() {
         </Tip>
       </EasterEggHover>
 
-      {/* Bob springs up from below the 📁 reveal-temp button — v0.1.6
-          gif sized 75×274 (tall portrait).  Bob suggested the
-          reveal-temp feature so he gets the easter egg. */}
+      {/* Bob rises from the TOP-RIGHT of the SLICING module.  Portal-
+          mode + alignToSelector pins his BOTTOM edge to the SLICING
+          rack's top edge, and `alignXSide="right"` parks him over
+          the right portion of the rack (above the beat-mask chip
+          strip) instead of being centered on the reveal-temp button
+          way over in the utility bar.  Visual effect: Bob pops up
+          out of the gap between the input rack and the slicing
+          rack's header, on the right side, like he's been hiding
+          behind the rack and just leaned out for a look.  The cache-
+          bust on every hover restarts his GIF from frame 1. */}
       <EasterEggHover
         gifSrc={bobGif}
         width={75}
         height={274}
         anchor="spring-up"
+        usePortal
+        alignToSelector='section[data-rack-name="slicing"]'
+        alignXSide="right"
         alt="Bob waving hello"
       >
         <Tip

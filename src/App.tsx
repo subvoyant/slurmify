@@ -25,7 +25,7 @@ import { cn } from "./lib/utils"
 import { useBackend, type BackendStatus } from "./hooks/useBackend"
 import { useSkinStore } from "./stores/skinStore"
 import { useSlurmStore, type AnalysisResult } from "./stores/slurmStore"
-import { useFxStore } from "./stores/fxStore"
+import { useFxStore, type DistShape, type SweepWave } from "./stores/fxStore"
 import { useVideoStore } from "./stores/videoStore"
 import { useBackendUrl } from "./hooks/useBackendUrl"
 import { useSlurmifyJob } from "./hooks/useSlurmifyJob"
@@ -36,6 +36,18 @@ import { api, invalidateBackendUrl } from "./lib/api"
 import { saveBackendFileAs, audioFilter, mp4Filter } from "./lib/save-as"
 import { VuMeter } from "./components/VuMeter"
 import { Dancer } from "./components/Dancer"
+import { open as openInShell } from "@tauri-apps/plugin-shell"
+
+// ── Brand mark — Siena (the cat) ──────────────────────────────────────
+// Siena is the late-20s Siamese cat that the Subvoyant apps are named
+// after.  Her portrait lives in graphic/icon/subvoyant.iconset/ as
+// the macOS .iconset folder for the app bundle (16-512 px).  We
+// import the 128×128 PNG here — at 28 px display × 2x Retina = 56 px
+// rendered, the 128 source gives us crisp downscaling without bloating
+// the bundle.  The animated dancer GIF still plays during slurmify
+// processing (in the OUTPUT module); for the brand mark a still
+// portrait is the right read.
+import sienaIcon from "../graphic/icon/subvoyant.iconset/icon_128x128.png"
 
 import { SkinPicker } from "./components/SkinPicker"
 import { Button } from "./components/ui/button"
@@ -50,7 +62,7 @@ import { LabeledKnob } from "./components/LabeledKnob"
 import { LabeledTextbox } from "./components/LabeledTextbox"
 import { KnobToggle } from "./components/KnobToggle"
 import { KnobNoteToggle } from "./components/KnobNoteToggle"
-import type { NoteLabel } from "./lib/note-mode"
+import { noteToMs, type NoteLabel } from "./lib/note-mode"
 import { ResolutionPicker, type Resolution } from "./components/ResolutionPicker"
 import { BeatMaskStrip } from "./components/BeatMaskStrip"
 import { InOutTrimRow } from "./components/InOutTrimRow"
@@ -81,11 +93,74 @@ export function App() {
           "px-4 py-2",
         )}
       >
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-lg font-extralight tracking-[0.2em] text-slurm-cyan">
-            SIENA SLURMER
-          </h1>
-          <span className="text-[11px] uppercase tracking-[0.2em] text-slurm-muted">
+        <div className="flex items-center gap-3">
+          {/* Siena icon + SIENA SLURMER wordmark, both wrapped in a
+              single clickable button that opens subvoyant.com in the
+              user's default browser via Tauri's plugin-shell.  We
+              avoid <a target="_blank"> because Tauri 2's webview can
+              either block or in-window-open external links depending
+              on platform; plugin-shell.open() forces the OS default
+              browser which is what we want.  Both the icon and the
+              title text are inside the same button so either can be
+              clicked — matches what you'd expect from any branded
+              app's top-left corner. */}
+          <button
+            type="button"
+            aria-label="Visit subvoyant.com"
+            title="Visit subvoyant.com"
+            onClick={() => {
+              void openInShell("https://www.subvoyant.com").catch((e) => {
+                // eslint-disable-next-line no-console
+                console.warn("[slurm] failed to open subvoyant.com:", e)
+              })
+            }}
+            className={cn(
+              "group flex items-center gap-3",
+              "rounded px-1 py-0.5 -mx-1 -my-0.5",
+              "transition-all hover:bg-white/5",
+              "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "cursor-pointer",
+            )}
+          >
+            <img
+              src={sienaIcon}
+              alt="Siena"
+              draggable={false}
+              className={cn(
+                "h-7 w-auto shrink-0 rounded-sm",
+                "transition-all",
+                // Slight glow on hover so the icon feels alive and
+                // the link affordance reads.
+                "group-hover:drop-shadow-[0_0_6px_var(--slurm-cyan)]",
+              )}
+            />
+
+            {/* Wordmark — Major Mono Display silk-screened onto the
+                aluminum top-rail.  Tracked-out wide so the caps-only
+                geometric shapes read like an actual product badge.
+                Inset+drop shadow combo simulates etched ink.
+                Hover-brightening is handled by the icon's drop-shadow
+                glow rather than animating this text-shadow — a
+                Tailwind arbitrary class with multi-stop rgba() commas
+                is brittle (the JIT splits on commas). */}
+            <h1
+              className={cn(
+                "font-display text-lg tracking-[0.25em] text-slurm-cyan",
+                "leading-none",
+              )}
+              style={{
+                textShadow:
+                  "0 1px 0 rgba(0,0,0,0.65), 0 -1px 0 rgba(255,255,255,0.06), 0 0 14px color-mix(in oklab, var(--slurm-cyan) 35%, transparent)",
+              }}
+            >
+              SIENA SLURMER
+            </h1>
+          </button>
+
+          {/* Version readout — sits OUTSIDE the link button so
+              clicking the version doesn't open subvoyant.com (a
+              version number isn't a navigational target). */}
+          <span className="lcd text-[14px] tracking-wide text-slurm-muted">
             v0.2.0
           </span>
         </div>
@@ -127,18 +202,21 @@ export function App() {
           </RackModule>
         )}
 
-        {/* STRETCH module — same gating */}
+        {/* STRETCH + BEAT TRIM — side-by-side row.  These two modules
+            are both small (3 controls each) so they read as a
+            natural pair when placed in a 2-column grid: STRETCH
+            shapes the timing/pitch up front, BEAT TRIM tightens the
+            individual slices.  On narrower windows the grid wraps
+            via grid-cols-1 to keep things readable. */}
         {hasSource && (
-          <RackModule color="stretch" name="stretch" status="idle">
-            <StretchBody />
-          </RackModule>
-        )}
-
-        {/* BEAT TRIM module — per-slice trim + gap */}
-        {hasSource && (
-          <RackModule color="trim" name="beat trim" status="idle">
-            <BeatTrimBody />
-          </RackModule>
+          <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+            <RackModule color="stretch" name="stretch" status="idle">
+              <StretchBody />
+            </RackModule>
+            <RackModule color="trim" name="beat trim" status="idle">
+              <BeatTrimBody />
+            </RackModule>
+          </div>
         )}
 
         {/* STUTTER module — stutter family + reverse */}
@@ -429,104 +507,124 @@ function SlicingBody() {
         />
       </div>
 
-      {/* Bottom row — knob trio on the LEFT, beat mask on the RIGHT.
-          The beat mask grid (8 cols × 1-4 rows depending on resolution)
-          sits next to the knobs rather than above them, using
-          horizontal real estate that was previously empty. */}
+      {/* Two-column layout below the resolution picker.
+          LEFT column: knob trio (transient / envelope / shuffle) on
+            top row, BPM-override textbox on bottom row.
+          RIGHT column: beat mask chip strip, sitting next to the
+            knobs at the parent flex's natural `gap-6` distance so
+            it reads as part of the same control unit (not banished
+            to the panel's right edge — `ml-auto` made the strip and
+            the knob group feel like two unrelated tools).
+          Why a two-column layout?  At 1/32 the chip strip is 4 rows
+          of 8 chips; the left column is already two rows tall (knobs
+          + textbox stacked).  Side-by-side, neither column pushes
+          the SLICING panel taller than the chip strip itself —
+          previously the chip strip and the BPM textbox were stacked
+          vertically and at 1/32 the panel grew uncomfortably tall
+          and the strip "intersected" the BPM area visually.
+          `items-start` keeps both columns top-aligned so the chip
+          strip's first row lines up with the knob row's tops. */}
       <div className="flex flex-wrap items-start gap-6 pt-1">
-        {/* Knob group — fixed width so beat mask claims the rest */}
-        <div className="flex flex-wrap gap-3">
-          <LabeledKnob
-            label="transient"
-            value={transientSensitivity}
-            onChange={(v) => setParam("transient_sensitivity", v)}
-            min={0} max={1} step={0.05}
-            defaultValue={0.5}
-            formatValue={(v) => v.toFixed(2)}
+        {/* LEFT column — knob trio over BPM override, stacked
+            vertically with a small gap.  shrink-0 prevents the
+            beat-mask grid (which lives to the right) from squeezing
+            the BPM textbox label. */}
+        <div className="flex flex-col gap-2 shrink-0">
+          <div className="flex flex-wrap gap-3">
+            <LabeledKnob
+              label="transient"
+              value={transientSensitivity}
+              onChange={(v) => setParam("transient_sensitivity", v)}
+              min={0} max={1} step={0.05}
+              defaultValue={0.5}
+              formatValue={(v) => v.toFixed(2)}
+              tooltip={
+                <>
+                  How strongly the slicer pulls grid points toward audio
+                  onsets (drum hits, note attacks).{" "}
+                  <strong>0</strong> = pure tempo grid.{" "}
+                  <strong>1</strong> = pure onset detection.
+                </>
+              }
+            />
+            <LabeledKnob
+              label="envelope"
+              value={envelopeMs}
+              onChange={(v) => setParam("envelope_ms", v)}
+              min={0} max={20} step={0.5}
+              defaultValue={2}
+              formatValue={(v) => v.toFixed(1)}
+              unit="ms"
+              tooltip={
+                <>
+                  Linear fade-in/out at each slice edge.{" "}
+                  <strong>0 ms</strong> = classic clicky slurm.{" "}
+                  <strong>2-5 ms</strong> = smooth, no clicks.
+                </>
+              }
+            />
+            <KnobToggle
+              label="shuffle"
+              checked={randomizeOrder}
+              onCheckedChange={(v) => setParam("randomize_order", v)}
+              tooltip={
+                <>
+                  Play slices in <strong>random order</strong> instead of
+                  their original sequence. Auto-enabled when MAX RANDOM
+                  is selected (chaos pairs with chaos).
+                </>
+              }
+            />
+          </div>
+
+          {/* BPM override — optional textbox.  Set if librosa detects
+              the wrong tempo octave.  Also drives the note-mode
+              conversion (Phase E3c.2) for the four musical-time
+              knobs.  Empty = auto-detect (default).
+              Hint line shows the live-detected value from /analyze so the
+              user can compare their override against what librosa picked
+              (and decide whether to override at all). */}
+          <LabeledTextbox
+            label="BPM override"
+            value={bpmText}
+            onChange={setBpmText}
+            onBlur={commitBpm}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+            type="number"
+            min={20}
+            max={400}
+            step={1}
+            placeholder="auto-detect"
+            unit="bpm"
+            inputWidth="6rem"
             tooltip={
               <>
-                How strongly the slicer pulls grid points toward audio
-                onsets (drum hits, note attacks).{" "}
-                <strong>0</strong> = pure tempo grid.{" "}
-                <strong>1</strong> = pure onset detection.
+                Override the auto-detected tempo. Leave blank for librosa's
+                estimate (the default). Set explicitly if the slicer locks
+                onto the wrong octave (e.g., detects 70 BPM on a 140 BPM
+                track). Range: 20–400. Also drives the ♪ → ms conversion
+                for the four musical-time knobs in stutter / beat trim.
               </>
             }
-          />
-          <LabeledKnob
-            label="envelope"
-            value={envelopeMs}
-            onChange={(v) => setParam("envelope_ms", v)}
-            min={0} max={20} step={0.5}
-            defaultValue={2}
-            formatValue={(v) => v.toFixed(1)}
-            unit="ms"
-            tooltip={
-              <>
-                Linear fade-in/out at each slice edge.{" "}
-                <strong>0 ms</strong> = classic clicky slurm.{" "}
-                <strong>2-5 ms</strong> = smooth, no clicks.
-              </>
-            }
-          />
-          <KnobToggle
-            label="shuffle"
-            checked={randomizeOrder}
-            onCheckedChange={(v) => setParam("randomize_order", v)}
-            tooltip={
-              <>
-                Play slices in <strong>random order</strong> instead of
-                their original sequence. Auto-enabled when MAX RANDOM
-                is selected (chaos pairs with chaos).
-              </>
+            hint={
+              bpmOverride === null
+                ? <>auto-detected: <span className="font-mono tabular-nums text-slurm-fg">{detectedBpmLabel}</span></>
+                : <>override active — detected was <span className="font-mono tabular-nums">{detectedBpmLabel}</span></>
             }
           />
         </div>
-
-        {/* Beat mask — sits to the right of the knob group.  At 1/4
-            it's a single short row; at 1/32 it's four rows of 8.
-            The component itself is `w-fit` so it doesn't stretch. */}
+        {/* RIGHT column — beat mask chip strip.  Sits at the parent
+            flex's natural `gap-6` (24 px) from the LEFT column, so
+            it visually belongs to the same control group instead of
+            being pushed to the panel's right edge.  flex-wrap on the
+            parent will let the strip drop below the LEFT column on
+            narrow viewports rather than overflowing the panel. */}
         <BeatMaskStrip
           resolution={resolution}
           mask={beatMask}
           onChange={(m) => setParam("beat_mask", m)}
         />
       </div>
-
-      {/* BPM override — optional textbox.  Set if librosa detects
-          the wrong tempo octave.  Also drives the note-mode
-          conversion (Phase E3c.2) for the four musical-time
-          knobs.  Empty = auto-detect (default).
-          Hint line shows the live-detected value from /analyze so the
-          user can compare their override against what librosa picked
-          (and decide whether to override at all). */}
-      <LabeledTextbox
-        label="BPM override"
-        value={bpmText}
-        onChange={setBpmText}
-        onBlur={commitBpm}
-        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
-        type="number"
-        min={20}
-        max={400}
-        step={1}
-        placeholder="auto-detect"
-        unit="bpm"
-        inputWidth="6rem"
-        tooltip={
-          <>
-            Override the auto-detected tempo. Leave blank for librosa's
-            estimate (the default). Set explicitly if the slicer locks
-            onto the wrong octave (e.g., detects 70 BPM on a 140 BPM
-            track). Range: 20–400. Also drives the ♪ → ms conversion
-            for the four musical-time knobs in stutter / beat trim.
-          </>
-        }
-        hint={
-          bpmOverride === null
-            ? <>auto-detected: <span className="font-mono tabular-nums text-slurm-fg">{detectedBpmLabel}</span></>
-            : <>override active — detected was <span className="font-mono tabular-nums">{detectedBpmLabel}</span></>
-        }
-      />
     </div>
   )
 }
@@ -561,24 +659,14 @@ function StretchBody() {
           </>
         }
       />
-      <LabeledKnob
-        label="pitch"
-        value={pitchShift}
-        onChange={(v) => setParam("pitch_shift_semitones", v)}
-        min={-24} max={24} step={1}
-        defaultValue={0}
-        formatValue={(v) => (v > 0 ? `+${v}` : String(v))}
-        unit="st"
-        tooltip={
-          <>
-            Pitch shift in semitones, AFTER the speed change.
-            ±12 = one octave. ±24 = two. Works best with "preserve
-            pitch" ON. Double-click resets to 0.
-          </>
-        }
-      />
+      {/* "Preserve pitch" toggle sits between speed and pitch — the
+          stretch operation it modifies happens at speed, and the
+          consequence (pitch stays the same) belongs visually next
+          to the pitch knob.  Two-word label wraps onto two lines
+          inside the 76px cell; .panel-label uppercases it to
+          "PRESERVE PITCH". */}
       <KnobToggle
-        label="preserve"
+        label="Preserve pitch"
         checked={preservePitch}
         onCheckedChange={(v) => setParam("preserve_pitch", v)}
         tooltip={
@@ -587,6 +675,23 @@ function StretchBody() {
             speed changes, pitch stays.{" "}
             <strong>Off</strong>: simple resample → chipmunk effect at
             high speed, monster voice at low speed.
+          </>
+        }
+      />
+      <LabeledKnob
+        label="Pitch offset"
+        value={pitchShift}
+        onChange={(v) => setParam("pitch_shift_semitones", v)}
+        min={-24} max={24} step={1}
+        defaultValue={0}
+        formatValue={(v) => (v > 0 ? `+${v}` : String(v))}
+        unit="st"
+        tooltip={
+          <>
+            Pitch offset in semitones, applied AFTER the speed change.
+            ±12 = one octave. ±24 = two. Works best with "Preserve
+            pitch" ON so speed and pitch stay decoupled.
+            Double-click resets to 0.
           </>
         }
       />
@@ -1139,268 +1244,901 @@ function FxBody() {
 
   const { run: burnRun } = useBurnFxJob()
 
-  // Decide what burn-fx will operate on.  Used for the button's
-  // tooltip + label so the user knows whether they'll burn FX into
-  // the slurm output (common) or directly onto the raw source (rare,
-  // pre-slurmify).
+  // Decide what burn-fx will operate on.
   const burnTarget = slurmOutput ? "slurm output" : (sourceFile ? "raw source" : null)
 
+  // When the master bypass is on, every effect section dims
+  // visually so the user can see at a glance that the chain is
+  // currently passing through unchanged.
+  const masterBypassed = fx.bypass
+
   return (
-    <div className="flex flex-col gap-3">
-      {/* Knob row — 4 sub-sections, gap-separated.  Each section's
-          first knob has a faint section divider chip on the left
-          ("DIST", "RING", etc.) so the four-stage chain reads as
-          a left-to-right signal flow. */}
-      <div className="flex flex-wrap items-start gap-x-1 gap-y-3 pt-1">
-        <FxSectionLabel name="dist" />
-        <LabeledKnob
-          label="drive"
-          value={fx.distDrive}
-          onChange={(v) => setFxParam("distDrive", v)}
-          min={0} max={1} step={0.01}
-          defaultValue={0}
-          formatValue={(v) => v.toFixed(2)}
-          tooltip={
-            <>
-              Tanh-shaped saturation. <strong>0</strong> = bypass.{" "}
-              <strong>0.3</strong> = warm color.{" "}
-              <strong>0.7+</strong> = aggressive clipping. The curve
-              is normalized so output peaks stay near ±1 — louder
-              clip levels don't bleed into raw gain.
-            </>
-          }
-        />
+    <div className="flex flex-col gap-0 -mx-3 -mt-3">
 
-        <FxSectionLabel name="ring" />
-        <LabeledKnob
-          label="freq"
-          value={fx.ringFreq}
-          onChange={(v) => setFxParam("ringFreq", v)}
-          min={20} max={2000} step={1}
-          defaultValue={200}
-          formatValue={(v) => v.toFixed(0)}
-          unit="Hz"
-          tooltip={
-            <>
-              Carrier oscillator frequency. <strong>20-100 Hz</strong>{" "}
-              = sub tremolo flutter. <strong>100-500</strong> = classic
-              metallic ring. <strong>500+</strong> = inharmonic crunch.
-            </>
-          }
-        />
-        <LabeledKnob
-          label="depth"
-          value={fx.ringDepth}
-          onChange={(v) => setFxParam("ringDepth", v)}
-          min={0} max={1} step={0.01}
-          defaultValue={0}
-          formatValue={(v) => v.toFixed(2)}
-          tooltip={
-            <>
-              Ring-mod blend amount. <strong>0</strong> = bypass
-              (gain stays at 1). <strong>1</strong> = full sine
-              modulation of the gain envelope.
-            </>
-          }
-        />
+      {/* ── TOP-RAIL: Roland-style yellow pinstripe + master bypass +
+          "SLURM·FX" model plate.  Sits flush against the bottom edge
+          of the rack header (negative margins on the parent push it
+          right up against the seam, so the rail reads as part of
+          the chassis rather than floating in the body padding). */}
+      <FxTopRail
+        bypass={fx.bypass}
+        onToggleBypass={() => setFxParam("bypass", !fx.bypass)}
+      />
 
-        <FxSectionLabel name="delay" />
-        <LabeledKnob
-          label="time"
-          value={fx.delayTime}
-          onChange={(v) => setFxParam("delayTime", v)}
-          min={0} max={2} step={0.01}
-          defaultValue={0.3}
-          formatValue={(v) => (v * 1000).toFixed(0)}
-          unit="ms"
-          tooltip={
-            <>
-              Delay-line length, 0–2 seconds. Display is in ms for
-              read-at-a-glance. Pair with feedback for slap-back
-              echoes, dub trails, or self-oscillating drones.
-            </>
-          }
-        />
-        <LabeledKnob
-          label="feedback"
-          value={fx.delayFb}
-          onChange={(v) => setFxParam("delayFb", v)}
-          min={0} max={0.95} step={0.01}
-          defaultValue={0.35}
-          formatValue={(v) => v.toFixed(2)}
-          tooltip={
-            <>
-              How much of the delayed signal feeds back into the
-              line. <strong>0</strong> = single repeat.{" "}
-              <strong>0.5</strong> = ~6 audible repeats.{" "}
-              <strong>0.9+</strong> = drone / self-oscillation. Capped
-              at 0.95 to prevent runaway clipping.
-            </>
-          }
-        />
-        <LabeledKnob
-          label="mix"
-          value={fx.delayMix}
-          onChange={(v) => setFxParam("delayMix", v)}
-          min={0} max={1} step={0.01}
-          defaultValue={0}
-          formatValue={(v) => v.toFixed(2)}
-          tooltip={
-            <>
-              Wet/dry blend. <strong>0</strong> = bypass.{" "}
-              <strong>0.5</strong> = equal dry + wet (classic).{" "}
-              <strong>1</strong> = wet only (delay-only signal).
-            </>
-          }
-        />
+      {/* ── MOD PANEL: olive zone for modulation effects ──────────── */}
+      <div className={cn(
+        "fx-panel-mod px-3 py-2 transition-opacity",
+        masterBypassed && "opacity-50",
+      )}>
+        <FxPanelTitle name="modulation" />
+        <div className="flex items-stretch gap-1 flex-wrap">
 
-        <FxSectionLabel name="phaser" />
-        <LabeledKnob
-          label="rate"
-          value={fx.phaseRate}
-          onChange={(v) => setFxParam("phaseRate", v)}
-          min={0.05} max={10} step={0.05}
-          defaultValue={1.0}
-          formatValue={(v) => v.toFixed(2)}
-          unit="Hz"
-          tooltip={
-            <>
-              LFO sweep rate. <strong>0.05-0.5 Hz</strong> = slow
-              cosmic sweep. <strong>1-3</strong> = classic phaser
-              swirl. <strong>5+</strong> = throbbing modulation.
-            </>
-          }
-        />
-        <LabeledKnob
-          label="depth"
-          value={fx.phaseDepth}
-          onChange={(v) => setFxParam("phaseDepth", v)}
-          min={0} max={1} step={0.01}
-          defaultValue={0}
-          formatValue={(v) => v.toFixed(2)}
-          tooltip={
-            <>
-              Phaser intensity — controls both the LFO sweep range
-              AND the wet/dry mix in lockstep. <strong>0</strong> =
-              bypass. <strong>1</strong> = full sweep + balanced
-              wet/dry.
-            </>
-          }
-        />
+          {/* DIST */}
+          <FxSubSection
+            name="dist"
+            enabled={fx.distEnabled}
+            onToggle={() => setFxParam("distEnabled", !fx.distEnabled)}
+            weight={4}
+          >
+            <LabeledKnob
+              label="gain"
+              value={fx.distGain}
+              onChange={(v) => setFxParam("distGain", v)}
+              min={-24} max={24} step={0.5}
+              defaultValue={0}
+              formatValue={(v) => v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1)}
+              unit="dB"
+              showDefaultMark
+              disabled={!fx.distEnabled || masterBypassed}
+              tooltip={<>Pre-distortion input gain (-24 to +24 dB).  Adds drive UPSTREAM of the shaper, so even soft shapes can clip aggressively at high gain.  Double-click resets to 0; the tick mark indicates unity.</>}
+            />
+            <LabeledKnob
+              label="drive"
+              value={fx.distDrive}
+              onChange={(v) => setFxParam("distDrive", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.distEnabled || masterBypassed}
+              tooltip={<>Saturation amount.  <strong>0</strong> = passthrough.  <strong>0.3</strong> = warm.  <strong>0.7+</strong> = aggressive.  Curve type set by the SHAPE selector.</>}
+            />
+            <FxShapeSelector
+              value={fx.distShape}
+              onChange={(v) => setFxParam("distShape", v)}
+              disabled={!fx.distEnabled || masterBypassed}
+            />
+            <LabeledKnob
+              label="tone"
+              value={fx.distTone}
+              onChange={(v) => setFxParam("distTone", v)}
+              min={-1} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v > 0 ? `+${v.toFixed(2)}` : v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.distEnabled || masterBypassed}
+              tooltip={<>Post-distortion tone tilt — high-shelf at 2 kHz.  <strong>-1</strong> dark (-12 dB).  <strong>+1</strong> bright (+12 dB).  Tick at 0 = flat.</>}
+            />
+          </FxSubSection>
+
+          <FxRule />
+
+          {/* RING — now with the new frequency-sweep LFO controls */}
+          <FxSubSection
+            name="ring"
+            enabled={fx.ringEnabled}
+            onToggle={() => setFxParam("ringEnabled", !fx.ringEnabled)}
+            weight={6}
+          >
+            <LabeledKnob
+              label="freq"
+              value={fx.ringFreq}
+              onChange={(v) => setFxParam("ringFreq", v)}
+              min={20} max={2000} step={1}
+              defaultValue={200}
+              formatValue={(v) => v.toFixed(0)}
+              unit="Hz"
+              disabled={!fx.ringEnabled || masterBypassed || fx.ringSweepRate > 0}
+              tooltip={<>
+                Static carrier frequency.  Used when SWEEP RATE = 0.
+                When the sweep is active, this knob is overridden —
+                the carrier oscillates between LOW and HIGH cutoffs
+                instead.
+              </>}
+            />
+            <LabeledKnob
+              label="depth"
+              value={fx.ringDepth}
+              onChange={(v) => setFxParam("ringDepth", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.ringEnabled || masterBypassed}
+              tooltip={<>Ring-mod blend amount.  <strong>0</strong> = passthrough.  <strong>1</strong> = full sine modulation of the gain envelope.</>}
+            />
+            <LabeledKnob
+              label="sweep"
+              value={fx.ringSweepRate}
+              onChange={(v) => setFxParam("ringSweepRate", v)}
+              min={0} max={20} step={0.05}
+              defaultValue={0}
+              formatValue={(v) =>
+                v === 0      ? "off"
+                : v < 0.1    ? v.toFixed(3)
+                : v < 1      ? v.toFixed(2)
+                : v < 10     ? v.toFixed(2)
+                :              v.toFixed(1)
+              }
+              unit="Hz"
+              disabled={!fx.ringEnabled || masterBypassed}
+              // 0.001–1 Hz spans 70 % of the knob travel; 1–20 Hz the
+              // remaining 30 %.  Both segments use a log curve so
+              // very slow sweeps (the most musically useful range)
+              // get fine resolution and aren't compressed into the
+              // first few degrees.  See Knob's valueToNorm comment
+              // for the mapper contract.
+              valueToNorm={(v) => {
+                if (v <= 0)   return 0
+                if (v <= 1)   return 0.7 * (Math.log(Math.max(v, 0.001) / 0.001) / Math.log(1000))
+                return 0.7 + 0.3 * (Math.log(v) / Math.log(20))
+              }}
+              normToValue={(n) => {
+                if (n <= 0)   return 0
+                if (n <= 0.7) return 0.001 * Math.pow(1000, n / 0.7)
+                return Math.pow(20, (n - 0.7) / 0.3)
+              }}
+              // Graticule marks at the three musically meaningful
+              // points on the curve: 0 (off, knob fully CCW), 1 Hz
+              // (the 70 % crossover where the curve transitions from
+              // log-fine to log-coarse), and 20 Hz (top end, drawn
+              // as ∞ since 20 Hz feels effectively "audio-rate" — at
+              // that speed the carrier sounds like a continuous
+              // FM smear rather than a discrete sweep).
+              markers={[
+                { value: 0,  label: "0" },
+                { value: 1,  label: "1" },
+                { value: 20, label: "∞" },
+              ]}
+              tooltip={<>
+                LFO speed for the carrier-frequency sweep.
+                <strong> 0</strong> = sweep off (static FREQ applies).
+                <strong> 0.001–1 Hz</strong> spans 70&nbsp;% of the knob
+                travel for fine slow-sweep control;
+                <strong> 1–20 Hz</strong> the remaining 30&nbsp;%.
+                Graticule marks at <strong>0 / 1 / ∞</strong>.  LFO
+                waveform set by the WAVE selector.
+              </>}
+            />
+            <LabeledKnob
+              label="low"
+              value={fx.ringSweepLow}
+              onChange={(v) => setFxParam("ringSweepLow", v)}
+              min={20} max={2000} step={1}
+              defaultValue={100}
+              formatValue={(v) => v.toFixed(0)}
+              unit="Hz"
+              disabled={!fx.ringEnabled || masterBypassed || fx.ringSweepRate === 0}
+              tooltip={<>Bottom cutoff of the sweep range.  When sweep is active, the carrier won't go below this frequency.</>}
+            />
+            <LabeledKnob
+              label="high"
+              value={fx.ringSweepHigh}
+              onChange={(v) => setFxParam("ringSweepHigh", v)}
+              min={20} max={2000} step={1}
+              defaultValue={800}
+              formatValue={(v) => v.toFixed(0)}
+              unit="Hz"
+              disabled={!fx.ringEnabled || masterBypassed || fx.ringSweepRate === 0}
+              tooltip={<>Top cutoff of the sweep range.  When sweep is active, the carrier won't go above this frequency.</>}
+            />
+            <FxWaveSelector
+              value={fx.ringSweepWave}
+              onChange={(v) => setFxParam("ringSweepWave", v)}
+              disabled={!fx.ringEnabled || masterBypassed || fx.ringSweepRate === 0}
+            />
+          </FxSubSection>
+
+          <FxRule />
+
+          {/* TREM — rate now has a Hz ⇄ ♪ toggle so users can lock
+              the tremolo rate to a note value at the current BPM
+              (e.g. 1/8 at 120 BPM = 4 Hz; the conversion uses
+              `1000 / noteToMs(note, bpm)` so each note resolves to
+              its rate in Hz). */}
+          <FxSubSection
+            name="trem"
+            enabled={fx.tremoloEnabled}
+            onToggle={() => setFxParam("tremoloEnabled", !fx.tremoloEnabled)}
+            weight={3}
+          >
+            <KnobNoteToggle
+              label="rate"
+              msValue={fx.tremoloRate}
+              onMsChange={(v) => setFxParam("tremoloRate", v)}
+              msMin={0.05} msMax={20} msStep={0.05}
+              msDefault={4}
+              noteValue={fx.tremoloRateNote}
+              onNoteChange={(v: NoteLabel) => setFxParam("tremoloRateNote", v)}
+              mode={fx.tremoloRateMode}
+              onModeChange={(m) => setFxParam("tremoloRateMode", m as "Hz" | "♪")}
+              valueMode="Hz"
+              valueUnit="Hz"
+              valueModeLabel="Hz"
+              valueFormat={(v) => v.toFixed(2)}
+              noteToValue={(note, bpm) => {
+                const ms = noteToMs(note, bpm)
+                return ms > 0 ? 1000 / ms : 0
+              }}
+              disabled={!fx.tremoloEnabled || masterBypassed}
+              tooltip={<>
+                Tremolo LFO rate.  Toggle <strong>Hz ⇄ ♪</strong> to
+                lock to a note value at the current BPM (1/4 at 120
+                BPM = 2 Hz, 1/8 = 4 Hz, etc.).  In Hz mode:
+                <strong> 0.05-1</strong> = slow swell,
+                <strong> 2-6</strong> = classic,
+                <strong> 10+</strong> = vibrato-flutter.
+              </>}
+            />
+            <LabeledKnob
+              label="depth"
+              value={fx.tremoloDepth}
+              onChange={(v) => setFxParam("tremoloDepth", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.tremoloEnabled || masterBypassed}
+              tooltip={<>Tremolo depth.  <strong>0</strong> = bypass.  <strong>0.5</strong> = bouncy.  <strong>1</strong> = full chop.</>}
+            />
+            <LabeledKnob
+              label="phase"
+              value={fx.tremoloPhase}
+              onChange={(v) => setFxParam("tremoloPhase", v)}
+              min={0} max={360} step={1}
+              defaultValue={0}
+              formatValue={(v) => `${Math.round(v)}°`}
+              showDefaultMark
+              markers={[
+                { value: 0,   label: "0" },
+                { value: 90,  label: "¼" },
+                { value: 180, label: "½" },
+                { value: 270, label: "¾" },
+              ]}
+              disabled={!fx.tremoloEnabled || masterBypassed}
+              tooltip={<>
+                Phase offset of the tremolo LFO, 0–360°.  Shifts WHEN
+                the modulation peak hits relative to the audio.
+                Useful for time-aligning the tremolo "hits" with
+                downbeats or other rhythmic elements.  Markers at
+                0° (in-phase), 90° (¼ period), 180° (anti-phase),
+                270° (¾ period).
+              </>}
+            />
+          </FxSubSection>
+
+        </div>
       </div>
 
-      {/* Action row — Burn FX + reset */}
-      <div className="flex items-center gap-3">
-        <Tip
-          text={
-            isBurning
-              ? "A burn-FX job is already running. Wait for it to finish."
-              : burnTarget
-                ? <>
-                    Bake the current FX settings into a NEW audio file
-                    derived from the {burnTarget}. The OUTPUT player
-                    will switch to playing that burned file. The live
-                    Web Audio FX still applies on top, so you can keep
-                    twisting knobs to layer effects.
-                  </>
-                : "Drop a file or run slurmify first — burn-FX needs an audio source."
-          }
-        >
-          <Button
-            size="default"
-            variant="default"
-            disabled={isBurning || !burnTarget}
-            onClick={() => void burnRun()}
-            className="min-w-[120px]"
+      {/* ── TIME PANEL: cool steel zone for time-space effects ───── */}
+      <div className={cn(
+        "fx-panel-time px-3 py-2 transition-opacity",
+        masterBypassed && "opacity-50",
+      )}>
+        <FxPanelTitle name="time / space" />
+        <div className="flex items-stretch gap-1 flex-wrap">
+
+          {/* DELAY (time control has ms ⇄ ♪ note-mode toggle) */}
+          <FxSubSection
+            name="delay"
+            enabled={fx.delayEnabled}
+            onToggle={() => setFxParam("delayEnabled", !fx.delayEnabled)}
+            weight={3}
           >
-            {isBurning ? (
-              <>
-                <Loader2 className="animate-spin" />
-                burning…
-              </>
-            ) : (
-              <>
-                <Flame />
-                burn FX
-              </>
-            )}
-          </Button>
-        </Tip>
+            <KnobNoteToggle
+              label="time"
+              msValue={fx.delayTime * 1000}
+              onMsChange={(v) => setFxParam("delayTime", v / 1000)}
+              msMin={0} msMax={2000} msStep={1}
+              msDefault={300}
+              noteValue={fx.delayTimeNote}
+              onNoteChange={(v: NoteLabel) => setFxParam("delayTimeNote", v)}
+              mode={fx.delayTimeMode}
+              onModeChange={(m) => setFxParam("delayTimeMode", m)}
+              disabled={!fx.delayEnabled || masterBypassed}
+              tooltip={<>
+                Delay time, 0–2000 ms.  Toggle <strong>ms ⇄ ♪</strong> to lock the delay to the detected BPM (e.g. 1/8 = eighth-note delay at the current tempo).  In note mode the value re-syncs whenever the BPM override or auto-detection changes.
+              </>}
+            />
+            <LabeledKnob
+              label="feedback"
+              value={fx.delayFb}
+              onChange={(v) => setFxParam("delayFb", v)}
+              min={0} max={0.95} step={0.01}
+              defaultValue={0.35}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.delayEnabled || masterBypassed}
+              tooltip={<>Delay feedback.  <strong>0</strong> = single repeat (loop disconnected).  <strong>0.5</strong> ≈ 6 echoes.  <strong>0.9+</strong> = drone.  Capped at 0.95 to prevent runaway.  Default tick at 0.35.</>}
+            />
+            <LabeledKnob
+              label="mix"
+              value={fx.delayMix}
+              onChange={(v) => setFxParam("delayMix", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.delayEnabled || masterBypassed}
+              tooltip={<>Wet/dry blend.  <strong>0</strong> = bypass.  <strong>0.5</strong> = equal.  <strong>1</strong> = wet only.</>}
+            />
+          </FxSubSection>
 
-        {isBurning && (
-          <span className="text-[11px] tabular-nums text-slurm-muted">
-            {burnDesc || "starting…"}
-          </span>
-        )}
+          <FxRule />
 
-        {burnError && !isBurning && (
-          <span className="text-[11px] text-slurm-danger">{burnError}</span>
-        )}
+          {/* PHASER */}
+          <FxSubSection
+            name="phaser"
+            enabled={fx.phaserEnabled}
+            onToggle={() => setFxParam("phaserEnabled", !fx.phaserEnabled)}
+            weight={2}
+          >
+            <LabeledKnob
+              label="rate"
+              value={fx.phaseRate}
+              onChange={(v) => setFxParam("phaseRate", v)}
+              min={0.05} max={10} step={0.05}
+              defaultValue={1.0}
+              formatValue={(v) => v.toFixed(2)}
+              unit="Hz"
+              disabled={!fx.phaserEnabled || masterBypassed}
+              tooltip={<>LFO sweep rate.  <strong>0.05-0.5</strong> = cosmic sweep.  <strong>1-3</strong> = classic phaser.  <strong>5+</strong> = throbbing.</>}
+            />
+            <LabeledKnob
+              label="depth"
+              value={fx.phaseDepth}
+              onChange={(v) => setFxParam("phaseDepth", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.phaserEnabled || masterBypassed}
+              tooltip={<>Phaser intensity — controls LFO sweep range AND wet/dry mix.  <strong>0</strong> = bypass.  <strong>1</strong> = full.</>}
+            />
+          </FxSubSection>
 
-        {/* Revert to dry slurm — only when something is currently
-            burned in (the OUTPUT player would be using the burned URL). */}
-        {burnedId && !isBurning && (
-          <Tip text="Drop the burned-FX file and play the dry slurm output again. The FX knob settings stay; only the bake is reverted.">
+          <FxRule />
+
+          {/* PANNER — auto-pan with mix + sweep (rate/low/high/wave),
+              same LFO pattern as the ring-mod sweep but driving a
+              StereoPannerNode's pan position instead of the ring
+              carrier frequency.  Sits POST-reverb so the panner
+              moves the entire processed signal in the stereo
+              field. */}
+          <FxSubSection
+            name="panner"
+            enabled={fx.pannerEnabled}
+            onToggle={() => setFxParam("pannerEnabled", !fx.pannerEnabled)}
+            weight={5}
+          >
+            <LabeledKnob
+              label="mix"
+              value={fx.pannerMix}
+              onChange={(v) => setFxParam("pannerMix", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.pannerEnabled || masterBypassed}
+              tooltip={<>
+                Wet/dry blend.  <strong>0</strong> = bypass (signal
+                stays centered).  <strong>0.5</strong> = halfway
+                between centered and full pan.  <strong>1</strong>
+                = full pan effect.
+              </>}
+            />
+            <LabeledKnob
+              label="sweep"
+              value={fx.pannerSweepRate}
+              onChange={(v) => setFxParam("pannerSweepRate", v)}
+              min={0} max={20} step={0.05}
+              defaultValue={0.5}
+              formatValue={(v) =>
+                v === 0      ? "off"
+                : v < 0.1    ? v.toFixed(3)
+                : v < 1      ? v.toFixed(2)
+                : v < 10     ? v.toFixed(2)
+                :              v.toFixed(1)
+              }
+              unit="Hz"
+              disabled={!fx.pannerEnabled || masterBypassed}
+              // Same 70/30 log taper as the ring sweep — slow rates
+              // (the most musically useful range for auto-pan) get
+              // most of the knob travel.
+              valueToNorm={(v) => {
+                if (v <= 0)   return 0
+                if (v <= 1)   return 0.7 * (Math.log(Math.max(v, 0.001) / 0.001) / Math.log(1000))
+                return 0.7 + 0.3 * (Math.log(v) / Math.log(20))
+              }}
+              normToValue={(n) => {
+                if (n <= 0)   return 0
+                if (n <= 0.7) return 0.001 * Math.pow(1000, n / 0.7)
+                return Math.pow(20, (n - 0.7) / 0.3)
+              }}
+              markers={[
+                { value: 0,  label: "0" },
+                { value: 1,  label: "1" },
+                { value: 20, label: "∞" },
+              ]}
+              tooltip={<>
+                Pan-sweep rate in Hz. <strong>0</strong> = sweep off
+                (pan parks at the midpoint of low/high).
+                <strong> 0.001–1 Hz</strong> spans 70% of knob travel
+                for slow auto-pan; <strong>1–20 Hz</strong> the
+                remaining 30%.  At 20 Hz the panning is at audio rate
+                — borderline ring-mod-of-pan territory.
+              </>}
+            />
+            <LabeledKnob
+              label="L"
+              value={fx.pannerSpreadL}
+              onChange={(v) => setFxParam("pannerSpreadL", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={1}
+              formatValue={(v) =>
+                v === 0 ? "C"
+                : v === 1 ? "L"
+                : `L${v.toFixed(2)}`
+              }
+              showDefaultMark
+              // Invert the visual mapping: high value (= more left
+              // spread) renders the indicator pointing LEFT (CCW),
+              // low value renders pointing RIGHT (CW toward center).
+              // Without this inversion the L knob "increases to the
+              // right" which is cognitively dissonant for a control
+              // that reaches further LEFT as it grows.  Pairs with
+              // the R knob's natural "increases to the right"
+              // behavior so at default both indicators point AWAY
+              // from center, and at 0 both point TOWARD center.
+              valueToNorm={(v) => 1 - Math.max(0, Math.min(1, v))}
+              normToValue={(n) => 1 - Math.max(0, Math.min(1, n))}
+              invertArc
+              disabled={!fx.pannerEnabled || masterBypassed}
+              tooltip={<>
+                Spread to the LEFT — how far the pan reaches from
+                center toward full L.  <strong>0</strong> = pan
+                never crosses center to the left (right-side or
+                center-only sweep).  <strong>1</strong> = full L
+                reach (-1).  Combine with R for asymmetric sweeps
+                (e.g., L=0.3, R=1 keeps movement biased toward the
+                right channel).  Knob is inverted so the indicator
+                points LEFT when reaching far left.
+              </>}
+            />
+            <LabeledKnob
+              label="R"
+              value={fx.pannerSpreadR}
+              onChange={(v) => setFxParam("pannerSpreadR", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={1}
+              formatValue={(v) =>
+                v === 0 ? "C"
+                : v === 1 ? "R"
+                : `R${v.toFixed(2)}`
+              }
+              showDefaultMark
+              disabled={!fx.pannerEnabled || masterBypassed}
+              tooltip={<>
+                Spread to the RIGHT — mirror of L.  <strong>0</strong>
+                = pan never crosses center to the right.
+                <strong> 1</strong> = full R reach (+1).
+                When L and R differ, the sweep is asymmetric and
+                its midpoint shifts to (R-L)/2.
+              </>}
+            />
+            <FxWaveSelector
+              value={fx.pannerSweepWave}
+              onChange={(v) => setFxParam("pannerSweepWave", v)}
+              disabled={!fx.pannerEnabled || masterBypassed}
+            />
+          </FxSubSection>
+
+          <FxRule />
+
+          {/* REVERB */}
+          <FxSubSection
+            name="reverb"
+            enabled={fx.reverbEnabled}
+            onToggle={() => setFxParam("reverbEnabled", !fx.reverbEnabled)}
+            weight={3}
+          >
+            <LabeledKnob
+              label="size"
+              value={fx.reverbSize}
+              onChange={(v) => setFxParam("reverbSize", v)}
+              min={0.1} max={5} step={0.05}
+              defaultValue={1.5}
+              formatValue={(v) => v.toFixed(2)}
+              unit="s"
+              disabled={!fx.reverbEnabled || masterBypassed}
+              tooltip={<>Reverb tail length.  <strong>0.1-0.5</strong> = booth.  <strong>1-2</strong> = small room.  <strong>3+</strong> = hall / cathedral.</>}
+            />
+            <LabeledKnob
+              label="decay"
+              value={fx.reverbDecay}
+              onChange={(v) => setFxParam("reverbDecay", v)}
+              min={1} max={6} step={0.1}
+              defaultValue={2.5}
+              formatValue={(v) => v.toFixed(1)}
+              disabled={!fx.reverbEnabled || masterBypassed}
+              tooltip={<>Decay shape exponent.  <strong>1</strong> = linear.  <strong>2-3</strong> = natural room.  <strong>5-6</strong> = bunker.</>}
+            />
+            <LabeledKnob
+              label="mix"
+              value={fx.reverbMix}
+              onChange={(v) => setFxParam("reverbMix", v)}
+              min={0} max={1} step={0.01}
+              defaultValue={0}
+              formatValue={(v) => v.toFixed(2)}
+              showDefaultMark
+              disabled={!fx.reverbEnabled || masterBypassed}
+              tooltip={<>Reverb wet/dry mix.  <strong>0</strong> = bypass.  <strong>1</strong> = wet only.</>}
+            />
+          </FxSubSection>
+
+        </div>
+      </div>
+
+      {/* ── ACTION ROW: burn FX, status, revert, reset.  Sits in
+          normal padding (no negative margins) so it reads as part of
+          the rack chassis rather than another panel. */}
+      <div className="flex flex-col gap-2 px-3 py-3">
+        <div className="flex items-center gap-3">
+          <Tip
+            text={
+              isBurning
+                ? "A burn-FX job is already running.  Wait for it to finish."
+                : burnTarget
+                  ? <>Bake the current FX into a NEW audio file from the {burnTarget}.  <strong>Note:</strong> tremolo, reverb, dist gain/shape/tone, and ring-sweep are LIVE-PREVIEW ONLY for now — the backend burn applies the original four effects (drive / ring / delay / phaser).  Live FX still applies on top of the burned file.</>
+                  : "Drop a file or run slurmify first."
+            }
+          >
             <Button
-              size="sm"
-              variant="ghost"
-              className="text-slurm-muted hover:text-slurm-fg"
-              onClick={clearBurn}
+              size="default"
+              variant="default"
+              disabled={isBurning || !burnTarget}
+              onClick={() => void burnRun()}
+              className="min-w-[120px]"
             >
-              revert to dry
+              {isBurning ? (<><Loader2 className="animate-spin" />burning…</>) : (<><Flame />burn FX</>)}
             </Button>
           </Tip>
-        )}
 
-        {/* Reset all FX knobs to defaults — purely UI, doesn't touch
-            any burned file. */}
-        <Tip text="Set all 8 FX knobs back to their defaults (drive 0, depth 0, mix 0, etc.). Live preview becomes effectively bypassed. Doesn't affect any already-burned file.">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="ml-auto text-slurm-muted hover:text-slurm-fg"
-            onClick={resetFx}
-          >
-            <RotateCcw className="!h-3 !w-3" />
-            reset
-          </Button>
-        </Tip>
-      </div>
+          {isBurning && (
+            <span className="text-[11px] tabular-nums text-slurm-muted">
+              {burnDesc || "starting…"}
+            </span>
+          )}
 
-      {/* Progress bar — only visible while burning */}
-      {isBurning && (
-        <Progress value={Math.round(burnProg * 100)} />
-      )}
+          {burnError && !isBurning && (
+            <span className="text-[11px] text-slurm-danger">{burnError}</span>
+          )}
 
-      {/* Siena dancer — smaller for the FX module (the rack row is
-          already dense with 8 knobs).  Caption echoes the burn step
-          so the dancer doubles as a tasteful progress label. */}
-      {isBurning && (
-        <div className="flex justify-center py-1">
-          <Dancer width={120} caption={burnDesc || "starting…"} />
+          {burnedId && !isBurning && (
+            <Tip text="Drop the burned-FX file and play the dry slurm output again. Knob settings stay; only the bake is reverted.">
+              <Button size="sm" variant="ghost" className="text-slurm-muted hover:text-slurm-fg" onClick={clearBurn}>
+                revert to dry
+              </Button>
+            </Tip>
+          )}
+
+          <Tip text="Set every FX knob back to defaults. Live preview becomes effective bypass. Doesn't affect any already-burned file.">
+            <Button size="sm" variant="ghost" className="ml-auto text-slurm-muted hover:text-slurm-fg" onClick={resetFx}>
+              <RotateCcw className="!h-3 !w-3" />
+              reset
+            </Button>
+          </Tip>
         </div>
-      )}
+
+        {isBurning && (<Progress value={Math.round(burnProg * 100)} />)}
+
+        {isBurning && (
+          <div className="flex justify-center py-1">
+            <Dancer width={120} caption={burnDesc || "starting…"} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-/** Section divider chip used to break up the FX knob row visually
- *  into its four logical stages.  Renders as a thin vertical strip
- *  with a small uppercase label inside the rack module body. */
-function FxSectionLabel({ name }: { name: string }) {
+// ──────────────────────────────────────────────────────────────────────
+// FX MODULE HELPER COMPONENTS — Roland Chorus-Echo-inspired interior
+// ──────────────────────────────────────────────────────────────────────
+//
+// These helpers compose the FxBody's two-zone faceplate.  All visual
+// classes (.fx-rail, .fx-panel-mod, .fx-panel-time, .fx-subsection-
+// header, .fx-subsection-rule, .fx-modelplate) live in globals.css.
+// ──────────────────────────────────────────────────────────────────────
+
+/** Top-rail strip with the Roland-style yellow pinstripe.  Holds the
+ *  master FX bypass on the left and a stamped "SLURM·FX mk1" model
+ *  plate on the right.  Sits flush against the bottom edge of the
+ *  rack module header — the rack-deep-blue header above + the yellow
+ *  pinstripe below makes the seam read as the painted bezel of a
+ *  real piece of gear. */
+function FxTopRail({
+  bypass,
+  onToggleBypass,
+}: {
+  bypass:         boolean
+  onToggleBypass: () => void
+}) {
+  return (
+    <div className="fx-rail relative flex items-center gap-3 px-3 py-1.5">
+      <Tip
+        text={
+          <>
+            Master FX bypass.  When <strong>ON</strong> (LED green),
+            the chain is active and every per-effect bypass is
+            honored independently.  When <strong>OFF</strong>, every
+            effect collapses to passthrough — your dry slurm plays
+            back unaltered.  Useful for A/B comparison.
+          </>
+        }
+      >
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!bypass}
+          onClick={onToggleBypass}
+          className={cn(
+            "flex items-center gap-2 px-2 py-0.5 rounded-sm",
+            "border transition-all select-none",
+            !bypass
+              ? "border-slurm-ok/60 bg-black/40 text-slurm-fg"
+              : "border-slurm-border-2 bg-black/30 text-slurm-muted",
+          )}
+        >
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{
+              backgroundColor: !bypass ? "var(--slurm-ok)" : "var(--slurm-border-2)",
+              boxShadow:       !bypass ? "0 0 6px var(--slurm-ok)" : "inset 0 0 2px rgba(0,0,0,0.5)",
+            }}
+          />
+          <span className="panel-label text-[10px]">fx chain</span>
+          <span className="lcd text-[12px] tabular-nums">
+            {!bypass ? "ACTIVE" : "BYPASS"}
+          </span>
+        </button>
+      </Tip>
+
+      <div className="flex-1" />
+
+      {/* Decorative model plate — stamped onto the right end of the
+          rail like a Roland nameplate.  Click does nothing; this is
+          pure visual identity. */}
+      <div
+        className="fx-modelplate flex items-center gap-1 px-2 py-0.5 rounded-sm"
+        aria-hidden="true"
+      >
+        <span className="panel-label text-[9px] text-slurm-cyan">SLURM·FX</span>
+        <span className="panel-label text-[9px] text-white/35">— mk1</span>
+      </div>
+    </div>
+  )
+}
+
+/** Etched panel-name strip at the top of each color zone.  Small,
+ *  decorative dual-rule pattern (—— modulation ——) so the panel
+ *  identity reads without visual weight competing with the section
+ *  sub-headers below. */
+function FxPanelTitle({ name }: { name: string }) {
+  return (
+    <div className="flex items-center gap-2 mb-1.5">
+      <span className="h-px flex-1 bg-white/10" />
+      <span className="panel-label text-[9px] text-white/50">{name}</span>
+      <span className="h-px flex-1 bg-white/10" />
+    </div>
+  )
+}
+
+/** Single-effect sub-section.  The header bar is itself the
+ *  per-effect bypass toggle — click anywhere on it (LED + name)
+ *  to flip enable/disable.  The body slot below holds the section's
+ *  knobs and selectors via children.
+ *
+ *  `weight` controls flex-grow so a section's width tracks its
+ *  control count (DIST=4 knobs, RING=6 knobs, TREM=2 knobs → DIST
+ *  gets 4/12 of the panel, RING gets 6/12, TREM gets 2/12).  Without
+ *  this, every section took 1/N of the panel regardless of content,
+ *  which left big gutters in DIST/TREM and crammed RING. */
+function FxSubSection({
+  name,
+  enabled,
+  onToggle,
+  children,
+  tooltip,
+  weight = 1,
+}: {
+  name:    string
+  enabled: boolean
+  onToggle: () => void
+  children: React.ReactNode
+  tooltip?: React.ReactNode
+  weight?: number
+}) {
   return (
     <div
-      className={cn(
-        "flex h-[120px] flex-col items-center justify-center",
-        "px-1 mr-1 select-none",
-        "text-[9px] uppercase tracking-[0.15em] text-slurm-muted",
-        "border-l border-slurm-border-2",
-      )}
+      className="flex min-w-0 flex-col gap-1"
+      style={{ flexGrow: weight, flexShrink: 1, flexBasis: 0 }}
     >
-      <span style={{ writingMode: "vertical-rl" }}>{name}</span>
+      <Tip
+        text={
+          tooltip ?? (
+            <>
+              Per-effect bypass for the <strong>{name}</strong> stage.
+              Click anywhere on this header to toggle.  Independent of
+              the master FX bypass at the top of the module.
+            </>
+          )
+        }
+      >
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={`${name} bypass`}
+          onClick={onToggle}
+          className={cn(
+            "fx-subsection-header flex items-center gap-2 px-2 py-1",
+            "transition-opacity select-none cursor-pointer",
+            !enabled && "opacity-60",
+          )}
+        >
+          <span
+            className="inline-block h-1.5 w-1.5 rounded-full"
+            style={{
+              backgroundColor: enabled ? "var(--slurm-ok)" : "var(--slurm-border-2)",
+              boxShadow: enabled
+                ? "0 0 4px var(--slurm-ok)"
+                : "inset 0 0 1px rgba(0,0,0,0.5)",
+            }}
+          />
+          <span className="panel-label text-[10px] text-white/85">{name}</span>
+          {!enabled && (
+            <span className="panel-label text-[8px] text-slurm-warn ml-auto">
+              byp
+            </span>
+          )}
+        </button>
+      </Tip>
+
+      <div className="flex flex-wrap items-start gap-x-1 gap-y-2 px-1 pt-1 pb-1">
+        {children}
+      </div>
     </div>
   )
 }
+
+/** Vertical hairline divider between sub-sections in the same color
+ *  panel.  Faded at top + bottom (gradient defined in
+ *  .fx-subsection-rule) so the rule doesn't slam into the panel
+ *  edges.  self-stretch makes it span the full height of the
+ *  flex-stretch row regardless of which sibling is tallest. */
+function FxRule() {
+  return <div className="fx-subsection-rule w-px shrink-0 mx-1 self-stretch" />
+}
+
+/** 4-chip distortion shape selector — fits in a knob-cell-width
+ *  vertical stack so it sits cleanly inline with the other knobs
+ *  in the DIST sub-section. */
+function FxShapeSelector({
+  value,
+  onChange,
+  disabled,
+}: {
+  value:    DistShape
+  onChange: (v: DistShape) => void
+  disabled?: boolean
+}) {
+  const shapes: { value: DistShape; label: string; desc: string }[] = [
+    { value: "soft", label: "soft", desc: "Tanh saturation — smooth tube-like color." },
+    { value: "hard", label: "hard", desc: "Hard-clip to threshold — aggressive edge." },
+    { value: "fold", label: "fold", desc: "Wavefolder — sin(k·x) wraps around as drive increases." },
+    { value: "fuzz", label: "fuzz", desc: "Asymmetric half-rectified — transistor fuzz feel." },
+  ]
+  return (
+    <div className={cn(
+      "flex w-[76px] shrink-0 flex-col items-center gap-1 select-none",
+      disabled && "opacity-50",
+    )}>
+      <div className="flex h-14 flex-col gap-0.5 items-stretch w-full px-1">
+        {shapes.map((s) => {
+          const active = value === s.value
+          return (
+            <Tip key={s.value} text={s.desc}>
+              <button
+                type="button"
+                onClick={() => onChange(s.value)}
+                disabled={disabled}
+                className={cn(
+                  "flex-1 rounded text-[9px] uppercase tracking-wider",
+                  "border transition-colors",
+                  active
+                    ? "border-primary bg-primary/15 text-primary"
+                    : "border-slurm-border-2 text-slurm-muted hover:text-slurm-fg",
+                )}
+              >
+                {s.label}
+              </button>
+            </Tip>
+          )
+        })}
+      </div>
+      <div className="panel-label text-[10px] text-slurm-muted">shape</div>
+      <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
+    </div>
+  )
+}
+
+/** 4-chip ring-sweep wave selector.  Same vertical-stack pattern as
+ *  FxShapeSelector but for sine/saw/square/noise, sized to align
+ *  with the other knobs in the RING sub-section. */
+function FxWaveSelector({
+  value,
+  onChange,
+  disabled,
+}: {
+  value:    SweepWave
+  onChange: (v: SweepWave) => void
+  disabled?: boolean
+}) {
+  const waves: { value: SweepWave; label: string; desc: string }[] = [
+    { value: "sine",   label: "sin", desc: "Smooth periodic sweep — gentle wobble." },
+    { value: "saw",    label: "saw", desc: "Ramp up + sudden reset — pulse-train chase." },
+    { value: "square", label: "sqr", desc: "On/off step toggle — chops between low and high." },
+    { value: "noise",  label: "nse", desc: "Random wandering — band-limited noise modulation." },
+  ]
+  return (
+    <div className={cn(
+      "flex w-[76px] shrink-0 flex-col items-center gap-1 select-none",
+      disabled && "opacity-50",
+    )}>
+      <div className="flex h-14 flex-col gap-0.5 items-stretch w-full px-1">
+        {waves.map((w) => {
+          const active = value === w.value
+          return (
+            <Tip key={w.value} text={w.desc}>
+              <button
+                type="button"
+                onClick={() => onChange(w.value)}
+                disabled={disabled}
+                className={cn(
+                  "flex-1 rounded text-[9px] uppercase tracking-wider",
+                  "border transition-colors",
+                  active
+                    ? "border-primary bg-primary/15 text-primary"
+                    : "border-slurm-border-2 text-slurm-muted hover:text-slurm-fg",
+                )}
+              >
+                {w.label}
+              </button>
+            </Tip>
+          )
+        })}
+      </div>
+      <div className="panel-label text-[10px] text-slurm-muted">wave</div>
+      <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
+    </div>
+  )
+}
+
+// (Legacy effects-grid + old FxSection helper removed in the
+//  Roland Chorus-Echo redesign.  The new FxBody above uses
+//  FxTopRail / FxPanelTitle / FxSubSection / FxRule /
+//  FxShapeSelector / FxWaveSelector exclusively.)
 
 // ──────────────────────────────────────────────────────────────────────
 // VIDEO module body — YouTube-ready MP4 export.
@@ -1432,26 +2170,56 @@ function VideoBody() {
 
   const slurmOutput     = useSlurmStore((s) => s.output)
   const sourceFile      = useSlurmStore((s) => s.sourceFile)
+  const isSlurming      = useSlurmStore((s) => s.isRunning)
   const burnedFileId    = useFxStore((s) => s.burnedFileId)
   const backendUrl      = useBackendUrl()
 
   const { run: renderRun } = useRenderVideoJob()
+  // Auto-slurm-before-render: if the user clicks render with no
+  // existing slurm output (and no burned-FX file either), kick off a
+  // slurmify run with current settings FIRST, then chain into render.
+  // Reads the freshly-created output via slurmStore.getState() inside
+  // useRenderVideoJob.run so we don't need to plumb it through here.
+  const { run: slurmRun }  = useSlurmifyJob()
 
   const [saveStatus, setSaveStatus] = useState<{
     kind: "saving" | "saved" | "error"
     message?: string
   } | null>(null)
 
-  // Tell the user what audio source the next render will use, so they
-  // don't get a surprise "raw upload" video when they expected the
-  // slurm output.
+  // Tell the user what audio source the next render will use.  When
+  // there's no slurm output yet, we auto-slurm first — surface that
+  // in the label so the user knows clicking render will trigger TWO
+  // jobs in sequence rather than rendering the raw upload.
   const renderSourceLabel = burnedFileId
     ? "FX-burned output"
     : slurmOutput
       ? "slurm output"
       : sourceFile
-        ? "raw source (no slurm yet)"
+        ? "auto-slurm + render"
         : null
+
+  // Render-button click handler.  Two paths:
+  //   (a) audio already exists (slurm output or burned FX) → render
+  //       directly using whatever's there.
+  //   (b) only the raw source exists → run slurmify first, await
+  //       the new output, then render.  The slurm progress shows in
+  //       the OUTPUT module; the video progress kicks in afterwards.
+  // useRenderVideoJob.run reads slurmStore.output via getState() at
+  // call time, so the freshly-created slurm output is picked up
+  // automatically without needing to pass anything through here.
+  const handleRender = async () => {
+    const hasAudio = !!burnedFileId || !!slurmOutput?.output_id
+    if (!hasAudio) {
+      const slurmResult = await slurmRun()
+      if (!slurmResult) {
+        // Slurmify failed — error is already in slurmStore.error and
+        // visible in the OUTPUT module.  Don't proceed to render.
+        return
+      }
+    }
+    await renderRun()
+  }
 
   const handleSaveVideo = async () => {
     if (!renderedFileId) return
@@ -1541,28 +2309,47 @@ function VideoBody() {
         }
       />
 
-      {/* Action row — Render button + status */}
+      {/* Action row — Render button + status.  When the user has no
+          slurm output yet, the button label flips to "slurm + render"
+          and the click handler chains the two jobs.  Disabled while
+          either slurm OR video is in flight. */}
       <div className="flex items-center gap-3 mt-1">
         <Tip
           text={
             isRendering
               ? "A render is in progress. Wait for it to finish before queueing another."
-              : renderSourceLabel
-                ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>{renderSourceLabel}</strong> as the audio track. Stream-copied video + AAC audio = renders in seconds.</>
-                : "Drop a file first — render-video needs an audio source."
+              : isSlurming
+                ? "An auto-slurm is running first; the render kicks in as soon as it finishes."
+                : !renderSourceLabel
+                  ? "Drop a file first — render-video needs an audio source."
+                  : burnedFileId
+                    ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>FX-burned output</strong> as the audio track. Stream-copied video + AAC audio = renders in seconds.</>
+                    : slurmOutput
+                      ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>slurm output</strong> as the audio track. Stream-copied video + AAC audio = renders in seconds.</>
+                      : <>No slurm output yet — clicking will <strong>slurmify with the current settings first</strong>, then render the video.  Two jobs in sequence; OUTPUT module shows slurm progress, then this module shows render progress.</>
           }
         >
           <Button
             size="default"
             variant="default"
-            disabled={isRendering || !renderSourceLabel}
-            onClick={() => void renderRun()}
-            className="min-w-[160px]"
+            disabled={isRendering || isSlurming || !renderSourceLabel}
+            onClick={() => void handleRender()}
+            className="min-w-[180px]"
           >
-            {isRendering ? (
+            {isSlurming ? (
+              <>
+                <Loader2 className="animate-spin" />
+                slurming first…
+              </>
+            ) : isRendering ? (
               <>
                 <Loader2 className="animate-spin" />
                 rendering…
+              </>
+            ) : !slurmOutput && !burnedFileId && sourceFile ? (
+              <>
+                <Film />
+                slurm + render MP4
               </>
             ) : (
               <>
@@ -1573,7 +2360,7 @@ function VideoBody() {
           </Button>
         </Tip>
 
-        {!isRendering && renderSourceLabel && (
+        {!isRendering && !isSlurming && renderSourceLabel && (
           <span className="text-[10px] text-slurm-muted italic">
             audio source: {renderSourceLabel}
           </span>

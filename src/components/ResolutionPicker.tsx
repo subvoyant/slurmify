@@ -128,6 +128,17 @@ export function ResolutionPicker({
               width={110}
               height={149}
               anchor="slide-in-right"
+              // Portal mode so Max's body isn't clipped by the slicing
+              // rack module's overflow:hidden.
+              // alignToSelector pins his BOTTOM edge to the BEAT TRIM
+              // rack's top edge, so he plants his feet on the BEAT
+              // TRIM header bar instead of dangling off the MAX RANDOM
+              // chip and getting cropped against the resolution row.
+              // Horizontal placement stays trigger-relative (his left
+              // edge sits just past the chip's right side) — see the
+              // slide-in-right case in computeFixedCoords.
+              usePortal
+              alignToSelector='section[data-rack-name="beat trim"]'
               alt="Max sliding in"
             >
               {chip}

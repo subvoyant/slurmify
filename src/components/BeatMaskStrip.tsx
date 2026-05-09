@@ -153,32 +153,45 @@ export function BeatMaskStrip({
         <span>· click to drop a beat</span>
       </div>
 
-      {/* MaxFire peeks up from behind the chip grid on hover.  The
-          easter-egg wrapper is purely decorative — pointer-events on
-          the gif are off, so chip clicks pass through normally. */}
+      {/* MaxFire peeks up on chip-grid hover.  Portal mode so he
+          escapes the slicing rack module's overflow:hidden, plus
+          alignToSelector so his BASELINE rests on the slicing
+          header's top edge regardless of how many controls sit
+          between the chip grid and the header.  Cache-bust on every
+          hover restarts the GIF from frame 1. */}
       <EasterEggHover
         gifSrc={maxFireGif}
         width={400}
         height={278}
         anchor="peek-up-behind"
+        usePortal
+        alignToSelector='section[data-rack-name="slicing"]'
         alt="MaxFire peeking up"
       >
       <div
         role="group"
         aria-label="beat mask"
         className={cn(
-          // Fixed 8-column grid — beats wrap into a new row every 8.
-          //   1/1  → 1 chip   (1 row, 1 of 8 cells used)
-          //   1/2  → 2 chips  (1 row)
-          //   1/4  → 4 chips  (1 row)
-          //   1/8  → 8 chips  (1 row)
-          //   1/16 → 16 chips (2 rows of 8)
-          //   1/32 → 32 chips (4 rows of 8)
-          // Gives a stable rectangular layout regardless of available
-          // width, so the strip can sit predictably beside knobs.
-          "grid grid-cols-8 gap-1",
-          // Cap the strip's max width so it doesn't stretch oddly when
-          // it has fewer than 8 chips and lots of horizontal room.
+          // Fixed 8-column grid — chips wrap into rows of 8.  Layout map:
+          //   1/1  → 1 col,  1 row
+          //   1/2  → 2 col,  1 row
+          //   1/4  → 4 col,  1 row
+          //   1/8  → 8 col,  1 row
+          //   1/16 → 8 col,  2 rows
+          //   1/32 → 8 col,  4 rows
+          // The parent (SlicingBody) places this whole strip in a
+          // right-side column alongside a left column containing the
+          // knob trio + BPM textbox.  At 1/32 the left column is
+          // already two rows tall (knobs + textbox), so the 4-row
+          // chip grid doesn't push the SLICING panel taller —
+          // it just claims the otherwise-empty horizontal space on
+          // the right.
+          // gridTemplateColumns is set inline because Tailwind's
+          // grid-cols-{n} purge requires a safelist for dynamic
+          // values; inline `repeat(N, max-content)` sizes each
+          // column to chip width (each chip stays at w-9 / 36 px
+          // regardless of resolution).
+          "grid gap-1",
           "w-fit",
           // Opaque background — the easter egg sits BEHIND this grid
           // (z-index 0 vs the grid contents at z-index 1), so the
@@ -187,6 +200,12 @@ export function BeatMaskStrip({
           "bg-slurm-bg/80 rounded relative",
           disabled && "pointer-events-none opacity-50",
         )}
+        style={{
+          // min(count, 8) — fewer than 8 chips collapses to count
+          // columns so 1/4 stays a tight 4-cell row instead of
+          // spreading across an 8-wide grid with empty cells.
+          gridTemplateColumns: `repeat(${Math.min(count, 8)}, max-content)`,
+        }}
       >
         {effective.map((on, i) => (
           <Tip
