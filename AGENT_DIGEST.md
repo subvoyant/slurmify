@@ -78,11 +78,18 @@ slurmcore.py                  ← pure DSP (NumPy in/out, no I/O) — unchanged 
 slurmio.py                    ← filesystem IO + session-temp dir — unchanged from v0.1.6
 
 scripts/
-    build-sidecar.sh          ← PyInstaller → src-tauri/binaries/slurmify-backend-<triple>
-    build-dmg.sh              ← clean → sidecar → tauri build → repackage DMG with version
+    build-sidecar.sh          ← (macOS/Linux) PyInstaller → src-tauri/binaries/slurmify-backend-<triple>
+    build-dmg.sh              ← (macOS) clean → sidecar → tauri build → sign → notarize → repackage DMG
+    build-sidecar.ps1         ← (Windows)  PyInstaller .exe → src-tauri/binaries/slurmify-backend-<triple>.exe
+    build-windows.ps1         ← (Windows)  clean → sidecar → tauri build --bundles nsis → NSIS installer
+
+.github/workflows/
+    windows-build.yml         ← GitHub Actions: build the Windows NSIS installer on windows-latest, upload as artifact (see docs/WINDOWS_BUILD.md)
 
 docs/
-    TESTER_README.md          ← current Max-facing handoff doc (bundled in DMG)
+    TESTER_README.md          ← current Max-facing macOS handoff doc (bundled in DMG)
+    TESTER_README_WINDOWS.md  ← Bob-facing Windows handoff doc (sent with the NSIS .exe)
+    WINDOWS_BUILD.md          ← strategy + step-by-step for building the Windows installer
     UI_DESIGN_BRIEF.md        ← visual design spec for v0.2.0
     UI_DEVELOPMENT_PLAN.md    ← phase-by-phase migration plan (mostly historical now)
     adr/                      ← Architecture Decision Records (0001-0022)

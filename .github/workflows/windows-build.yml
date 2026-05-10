@@ -1,0 +1,140 @@
+# ──────────────────────────────────────────────────────────────────────
+# .github/workflows/windows-build.yml
+# ──────────────────────────────────────────────────────────────────────
+#
+# Builds the Slurmify Windows NSIS installer on a GitHub-hosted
+# windows-latest runner and uploads it as a workflow artifact.
+#
+# The fastest way to get a Windows build into a tester's hands without
+# owning or running a Windows machine yourself.  See
+# docs/WINDOWS_BUILD.md for the full plan + decisions behind this file.
+#
+# Triggers
+# ──────────
+#   - Push a tag matching `v*-win` (e.g. `v0.2.1-win`).  Recommended
+#     for "I want a build right now":
+#         git tag v0.2.1-win
+#         git push origin v0.2.1-win
+#   - Manual dispatch from the Actions tab on github.com (Run workflow…).
+#
+# Output
+# ──────────
+#   A `slurmify-windows-installer` artifact attached to the workflow
+#   run, containing the NSIS `-setup.exe`.  Click into the run on
+#   github.com → scroll to the Artifacts section at the bottom → download.
+#   Unzip locally, send the `.exe` to your tester.
+#
+# Cost
+# ──────────
+#   GitHub Actions counts Windows minutes at 2× the Linux rate.  A
+#   typical 8-minute build is 16 minutes off your monthly free quota
+#   (currently 2,000 min/month on the free plan).  Plenty for active
+#   development; if you blow through it, switch to Path B (local
+#   Windows machine) per docs/WINDOWS_BUILD.md.
+#
+# Notes
+# ──────────
+#   - MSI is intentionally NOT built — `--bundles nsis` skips it.
+#     Tauri 2's MSI bundler crashes when `externalBin` is configured
+#     (tauri-apps/tauri#14681).  NSIS produces a perfectly good
+#     `-setup.exe` and is the recommended distribution format until
+#     that issue is fixed upstream.
+#   - The build is unsigned.  Bob (or any tester) will see Microsoft
+#     SmartScreen on first launch and needs to click "More info" →
+#     "Run anyway."  Adding Authenticode signing is a separate
+#     workstream tracked under "What's deferred" in WINDOWS_BUILD.md.
+# ──────────────────────────────────────────────────────────────────────
+
+name: Build Windows installer
+
+on:
+  push:
+    tags:
+      - "v*-win"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Toolchain ────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # ── Runtime CLIs the sidecar bundles ─────────────────────────
+      # ffmpeg.exe is needed by librosa's audioread fallback decoder
+      # AND by api/upload.py for video → audio extraction.  rubberband.exe
+      # is needed by pyrubberband for time-stretch + pitch-shift.  The
+      # PyInstaller spec hard-fails the build if either is missing
+      # (per ADR-0023's posture, applied identically on Windows).
+      - name: Install ffmpeg + rubberband via Chocolatey
+        run: |
+          choco install -y ffmpeg
+          choco install -y rubberband-cli
+
+      # ── Backend Python deps ──────────────────────────────────────
+      # Editable install with the dev extras gets us PyInstaller +
+      # librosa + soundfile + pyrubberband + everything else the spec
+      # references.
+      - name: Install backend Python deps
+        working-directory: src-python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # ── Sidecar build ────────────────────────────────────────────
+      # The PowerShell script handles the rust-target host triple
+      # detection + binary placement so Tauri's externalBin resolver
+      # finds the produced .exe at the path it expects.
+      - name: Build Python sidecar (PyInstaller)
+        # PYINSTALLER_NO_SMOKE skips the "start the bundle, kill it
+        # after 4s" smoke test — CI containers sometimes can't bind
+        # to a localhost port cleanly, and the smoke test is a nice-to-
+        # have not a need-to-have.
+        env:
+          PYINSTALLER_NO_SMOKE: "1"
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-sidecar.ps1
+
+      # ── Frontend deps ────────────────────────────────────────────
+      - name: Install frontend deps
+        run: pnpm install
+
+      # ── Tauri build ──────────────────────────────────────────────
+      # `--bundles nsis` is required.  See top-of-file note re:
+      # tauri#14681.
+      - name: Build Tauri app + NSIS installer
+        run: pnpm tauri build --bundles nsis
+
+      # ── Upload installer as artifact ─────────────────────────────
+      # The Artifacts section at the bottom of the workflow run page
+      # gets a downloadable zip.  Inside: the `-setup.exe`.  Send to
+      # the tester.
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slurmify-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 14
+          if-no-files-found: error

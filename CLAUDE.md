@@ -77,10 +77,15 @@ alternatives, the discovery-file IPC contract), read
 | `src-python/pyproject.toml` | Sidecar Python deps. |
 | `slurmcore.py` | **Pure DSP** — slicing, stretching, FX, MAX RANDOM, note-mode, stereo handling. NumPy in/out, no I/O. Unchanged from v0.1.6. (ADR-0016) |
 | `slurmio.py` | **Filesystem IO** — `load_audio`, `_write_audio`, session-scoped temp directory, `_new_temp_path`. Unchanged from v0.1.6. (ADR-0017) |
-| `scripts/build-sidecar.sh` | Runs PyInstaller against `slurmify-backend.spec`, places the binary at `src-tauri/binaries/slurmify-backend-<triple>`. |
-| `scripts/build-dmg.sh` | Full pipeline: clean → build sidecar → `pnpm tauri build` → re-package DMG with versioned names + LICENSE + tester README + Applications symlink. Output: `SIENA Slurmer <version>.dmg`. |
+| `scripts/build-sidecar.sh` | (macOS/Linux) Runs PyInstaller against `slurmify-backend.spec`, places the binary at `src-tauri/binaries/slurmify-backend-<triple>`. |
+| `scripts/build-dmg.sh` | (macOS) Full pipeline: clean → build sidecar → `pnpm tauri build` → sign → notarize → re-package DMG with versioned names + LICENSE + tester README + Applications symlink. Output: `SIENA Slurmer <version>.dmg`. |
+| `scripts/build-sidecar.ps1` | (Windows) PowerShell mirror of `build-sidecar.sh`. Produces `slurmify-backend-x86_64-pc-windows-msvc.exe`. |
+| `scripts/build-windows.ps1` | (Windows) Full pipeline: clean → build sidecar → `pnpm tauri build --bundles nsis` → NSIS installer. No code signing yet (see `docs/WINDOWS_BUILD.md` "What's deferred"). |
+| `.github/workflows/windows-build.yml` | GitHub Actions workflow — triggers on `v*-win` tags or manual dispatch, runs the Windows pipeline on `windows-latest`, uploads the `-setup.exe` as a downloadable artifact. The "no Windows machine needed" path. |
 | `assets/siebaSlurm_A003.mp4` | Pre-encoded loop animation for the YouTube MP4 export. Stream-copied via ffmpeg (ADR-0006 still applies). |
-| `docs/TESTER_README.md` | Current tester-facing handoff doc (Max). Bundled into the DMG. |
+| `docs/TESTER_README.md` | Current macOS tester-facing handoff doc (Max). Bundled into the DMG. |
+| `docs/TESTER_README_WINDOWS.md` | Windows tester-facing handoff doc (Bob). Sent alongside the NSIS `-setup.exe`. |
+| `docs/WINDOWS_BUILD.md` | Strategy + step-by-step for the Windows build pipeline. Path A is GitHub Actions (no Windows machine needed); Path B is local Windows machine / VM. Read before changing the Windows scripts. |
 | `docs/adr/` | Architecture Decision Records 0001–0022. **ADR-0022 is the v0.2.0 architecture spec.** |
 | `LICENSE` | GPL-3.0 + third-party notices. Bundled into the DMG. |
 | `README.md` | User-facing setup. |
