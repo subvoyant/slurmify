@@ -47,10 +47,17 @@
 
 name: Build Windows installer
 
+# Trigger:
+#   - Any tag containing "-win" (e.g. v0.2.1-win, v0.2.1-win-2,
+#     v0.2.2-win-rc1).  The pattern is `v*-win*` so suffixes after
+#     -win work — the original `v*-win` was too strict and silently
+#     swallowed retag attempts ending in -win-2.
+#   - Manual dispatch from the Actions tab on github.com.  Builds
+#     against whatever ref you pick (typically `main`).
 on:
   push:
     tags:
-      - "v*-win"
+      - "v*-win*"
   workflow_dispatch:
 
 jobs:
