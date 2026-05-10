@@ -89,10 +89,52 @@ jobs:
       # is needed by pyrubberband for time-stretch + pitch-shift.  The
       # PyInstaller spec hard-fails the build if either is missing
       # (per ADR-0023's posture, applied identically on Windows).
-      - name: Install ffmpeg + rubberband via Chocolatey
+      #
+      # ffmpeg is available via Chocolatey.  rubberband is NOT — the
+      # `rubberband-cli` choco package does not exist as of May 2026
+      # (we tried; that's how this workflow first broke).  Official
+      # Windows binaries are distributed by Breakfast Quay (the upstream
+      # project) at https://breakfastquay.com/rubberband/ as a zip.
+      # Download + extract + add to PATH via $env:GITHUB_PATH.
+      - name: Install ffmpeg via Chocolatey
+        run: choco install -y ffmpeg
+
+      - name: Install rubberband (download from breakfastquay.com)
+        shell: pwsh
         run: |
-          choco install -y ffmpeg
-          choco install -y rubberband-cli
+          # Pin a known-good version.  Bumping is a one-line change.
+          $RubberbandVersion = "3.1.2"
+          $Url = "https://breakfastquay.com/files/releases/rubberband-$RubberbandVersion-gpl-executable-windows.zip"
+          $Zip = "$env:RUNNER_TEMP\rubberband.zip"
+          $Dir = "$env:RUNNER_TEMP\rubberband"
+
+          Write-Host "[ci] Downloading $Url"
+          Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing -ErrorAction Stop
+
+          Write-Host "[ci] Expanding to $Dir"
+          Expand-Archive -Path $Zip -DestinationPath $Dir -Force
+
+          # The zip extracts to a versioned subdir like
+          # rubberband-3.1.2-gpl-executable-windows\.  Find the rubberband.exe
+          # inside and add its directory to PATH for subsequent steps.
+          $Exe = Get-ChildItem $Dir -Recurse -Filter "rubberband.exe" |
+                 Select-Object -First 1
+          if (-not $Exe) {
+            Write-Error "[ci] rubberband.exe not found inside the downloaded zip — Breakfast Quay may have changed the archive layout. Check the URL or inspect $Dir."
+            exit 1
+          }
+          $BinDir = $Exe.Directory.FullName
+          Write-Host "[ci] Found rubberband.exe at $($Exe.FullName)"
+          Write-Host "[ci] Adding $BinDir to GITHUB_PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $BinDir
+
+      - name: Verify ffmpeg + rubberband are on PATH
+        shell: pwsh
+        run: |
+          Write-Host "ffmpeg:"
+          ffmpeg -version | Select-Object -First 1
+          Write-Host "rubberband:"
+          rubberband --version
 
       # ── Backend Python deps ──────────────────────────────────────
       # Editable install with the dev extras gets us PyInstaller +

@@ -237,9 +237,30 @@ corepack prepare pnpm@latest --activate
 choco install -y python --version=3.12.6
 # (if pip is missing: python -m ensurepip --upgrade)
 
-# 6. ffmpeg + rubberband — the runtime CLIs the sidecar shells out to
+# 6a. ffmpeg — runtime CLI, available on Chocolatey
 choco install -y ffmpeg
-choco install -y rubberband-cli
+
+# 6b. rubberband — NOT on Chocolatey (rubberband-cli is not a package).
+#     Download the official Windows binary from Breakfast Quay.  Pin the
+#     version so the build is reproducible.  Adjust the version string
+#     as needed; the GitHub Actions workflow uses the same pin.
+$RubberbandVersion = "3.1.2"
+$RubberbandZip = "$env:TEMP\rubberband.zip"
+$RubberbandDir = "$env:LOCALAPPDATA\rubberband"
+Invoke-WebRequest `
+    -Uri "https://breakfastquay.com/files/releases/rubberband-$RubberbandVersion-gpl-executable-windows.zip" `
+    -OutFile $RubberbandZip
+Expand-Archive -Path $RubberbandZip -DestinationPath $RubberbandDir -Force
+# Find the inner dir that contains rubberband.exe and add it to your
+# user PATH.  Restart PowerShell after this for the PATH update to
+# take effect.
+$RubberbandExeDir = (Get-ChildItem $RubberbandDir -Recurse `
+    -Filter "rubberband.exe" | Select-Object -First 1).Directory.FullName
+[Environment]::SetEnvironmentVariable(
+    "Path",
+    "$([Environment]::GetEnvironmentVariable('Path','User'));$RubberbandExeDir",
+    "User"
+)
 
 # 7. Git (if not already installed)
 choco install -y git

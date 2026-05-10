@@ -70,14 +70,38 @@ if ($LASTEXITCODE -ne 0) {
 # ── Verify ffmpeg + rubberband are on PATH at BUILD time ──────────────
 # The PyInstaller spec hard-fails if these are missing (per ADR-0023).
 # We pre-check here for a friendlier error message.
+#
+# NOTE: rubberband is NOT available on Chocolatey (the `rubberband-cli`
+# package does not exist; we discovered this the hard way when the first
+# CI build failed at the choco step).  The official Windows binary is
+# downloaded from Breakfast Quay — see docs/WINDOWS_BUILD.md §B.2 for
+# the install snippet.
 foreach ($cli in @("ffmpeg", "rubberband")) {
     $found = Get-Command $cli -ErrorAction SilentlyContinue
     if (-not $found) {
-        Write-Error @"
+        if ($cli -eq "rubberband") {
+            Write-Error @"
+[build-sidecar] ERROR: rubberband.exe not found on PATH.
+                 rubberband is NOT a Chocolatey package.  Install the
+                 official Windows binary from Breakfast Quay:
+
+                 `$ver = "3.1.2"
+                 Invoke-WebRequest `
+                     -Uri "https://breakfastquay.com/files/releases/rubberband-`$ver-gpl-executable-windows.zip" `
+                     -OutFile "`$env:TEMP\rubberband.zip"
+                 Expand-Archive -Path "`$env:TEMP\rubberband.zip" `
+                     -DestinationPath "`$env:LOCALAPPDATA\rubberband" -Force
+                 # Then add the inner folder containing rubberband.exe
+                 # to your user PATH and restart PowerShell.
+
+                 Full instructions: docs/WINDOWS_BUILD.md §B.2.
+"@
+        } else {
+            Write-Error @"
 [build-sidecar] ERROR: $cli not found on PATH.
                  Install with: choco install $cli
-                 (or `choco install rubberband-cli` for rubberband)
 "@
+        }
     }
     Write-Host "[build-sidecar] $cli at $($found.Source)"
 }
