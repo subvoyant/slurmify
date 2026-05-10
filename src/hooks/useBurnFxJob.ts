@@ -55,8 +55,16 @@ function buildRequestBody(
 
 interface BurnFxJobApi {
   /** Kick off a burn-fx run.  If `sourceFileId` is omitted, the hook
-   *  picks the slurm output or raw source automatically. */
-  run:    (sourceFileId?: string) => Promise<void>
+   *  picks the slurm output or raw source automatically.
+   *
+   *  Returns the burned-FX file_id on success, or `null` on failure.
+   *  This lets other flows (e.g., useRenderVideoJob's auto-burn-then-
+   *  render path introduced for the "FX-on-by-default for YouTube"
+   *  UX change) await the burn to completion and use its output
+   *  directly without watching the fxStore for `burnedFileId` to
+   *  populate.  fxStore is still updated as a side-effect (so the
+   *  OUTPUT module's player swaps to the burned file as before). */
+  run:    (sourceFileId?: string) => Promise<string | null>
   cancel: () => void
 }
 
@@ -74,7 +82,7 @@ export function useBurnFxJob(): BurnFxJobApi {
     }
   }, [])
 
-  const run = useCallback(async (sourceFileId?: string) => {
+  const run = useCallback(async (sourceFileId?: string): Promise<string | null> => {
     // Resolve which file_id to burn FX onto.  Priority: explicit arg
     // → slurm output → raw source.
     const slurm = useSlurmStore.getState()
@@ -86,7 +94,7 @@ export function useBurnFxJob(): BurnFxJobApi {
 
     if (!fileId) {
       finishBurn(null, "no source file to burn FX onto")
-      return
+      return null
     }
 
     // Abort any previous in-flight burn before starting a new one.
@@ -116,44 +124,56 @@ export function useBurnFxJob(): BurnFxJobApi {
       const es = new EventSource(`${baseUrl}/jobs/${job_id}/progress`)
       eventSourceRef.current = es
 
-      es.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data) as {
-            id:        string
-            progress:  number
-            desc:      string
-            done:      boolean
-            output_id: string | null
-            error:     string | null
-          }
-          updateBurn({ progress: payload.progress, desc: payload.desc })
-          if (payload.done) {
+      // Wrap the SSE consumer in a Promise so the caller can `await`
+      // the final outcome and receive the burned file_id (or null on
+      // failure).  Resolves exactly once — either when the SSE
+      // payload's `done=true` arrives, or when the connection drops.
+      return await new Promise<string | null>((resolve) => {
+        es.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data) as {
+              id:        string
+              progress:  number
+              desc:      string
+              done:      boolean
+              output_id: string | null
+              error:     string | null
+            }
+            updateBurn({ progress: payload.progress, desc: payload.desc })
+            if (payload.done) {
+              es.close()
+              eventSourceRef.current = null
+              if (payload.error) {
+                finishBurn(null, payload.error)
+                resolve(null)
+              } else if (payload.output_id) {
+                finishBurn(payload.output_id, null)
+                resolve(payload.output_id)
+              } else {
+                finishBurn(null, "burn-fx finished without an output_id")
+                resolve(null)
+              }
+            }
+          } catch (e) {
             es.close()
             eventSourceRef.current = null
-            if (payload.error) {
-              finishBurn(null, payload.error)
-            } else if (payload.output_id) {
-              finishBurn(payload.output_id, null)
-            } else {
-              finishBurn(null, "burn-fx finished without an output_id")
-            }
+            finishBurn(null, `bad SSE payload: ${(e as Error).message}`)
+            resolve(null)
           }
-        } catch (e) {
-          es.close()
-          eventSourceRef.current = null
-          finishBurn(null, `bad SSE payload: ${(e as Error).message}`)
         }
-      }
 
-      es.onerror = () => {
-        if (eventSourceRef.current === es) {
-          es.close()
-          eventSourceRef.current = null
-          finishBurn(null, "SSE connection lost during burn-fx")
+        es.onerror = () => {
+          if (eventSourceRef.current === es) {
+            es.close()
+            eventSourceRef.current = null
+            finishBurn(null, "SSE connection lost during burn-fx")
+            resolve(null)
+          }
         }
-      }
+      })
     } catch (e) {
       finishBurn(null, (e as Error).message ?? "unknown error")
+      return null
     }
   }, [cancel, startBurn, updateBurn, finishBurn])
 

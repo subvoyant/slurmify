@@ -760,7 +760,14 @@ def slurmify(
        — stutter / repeat     : two modes (full-tile classic or head-loop skip)
     5. Optional global shuffle (randomize_order flag).
     6. Concatenate all processed slices.
-    7. Soft normalize to –1 dBFS so stutter pile-up never clips.
+    7. RMS-match the output to the source loudness, then soft-limit
+       through tanh at –1 dBFS so the makeup gain can't drive
+       transients into clipping.  RMS match (vs the older peak
+       normalize) compensates for the perceived-loudness drop that
+       envelope fades inflict on short slices — a 7 ms fade on a
+       ~16 ms slice (1/32 @ 120 BPM) turns each slice into a triangle,
+       cutting RMS by ~5 dB while peaks survive.  Peak normalize
+       wouldn't recover that; RMS match does.
 
     ──────────────────────────────────────────────────────────────
     Parameters
@@ -893,6 +900,22 @@ def slurmify(
         raise ValueError(
             "In/out range is empty — check your start and end times."
         )
+
+    # ── Capture source RMS for Step 8 makeup-gain compensation ─────────────
+    # Snapshot the source's perceived loudness BEFORE any DSP runs so we
+    # can match the output's RMS back to it at the end of the pipeline.
+    # Why now (post-trim, pre-stretch)?  After trim is the right slice of
+    # audio for "what the user expects to hear loudness-wise"; before
+    # stretch keeps the measurement on the raw source, since pyrubberband
+    # itself can introduce small amplitude variation that would bias the
+    # reference if measured later.  ddof=0 (population RMS) is fine here:
+    # we only ever compare RMS-to-RMS as a ratio, so the bias-correction
+    # term cancels out.
+    source_rms = (
+        float(np.sqrt(np.mean(np.square(y, dtype=np.float64))))
+        if _n_samples(y) > 0
+        else 0.0
+    )
 
     _prog(0.15, "Time-stretching…")
     # ── Step 1: time-stretch ────────────────────────────────────────────────
@@ -1184,15 +1207,54 @@ def slurmify(
         # without disturbing the channel dimension.
         out = np.concatenate(processed, axis=-1)
 
-    # ── Step 8: soft normalize to –1 dBFS ──────────────────────────────────
-    # After stutter tiling, amplitude can pile up significantly.  Normalise
-    # to 0.891× peak (≈ –1 dBFS) so we stay just below clipping without
-    # imposing a hard limiter.  If the output is silence (peak == 0), skip.
-    # Use _n_samples for the emptiness check — len(out) on a 2-D stereo
-    # array returns the channel count (truthy even for empty audio).
-    peak = float(np.max(np.abs(out))) if _n_samples(out) > 0 else 0.0
-    if peak > 0:
-        out = (out / peak * 0.891).astype(np.float32)  # –1 dBFS ceiling
+    # ── Step 8: RMS-match output loudness to source, then soft-limit ───────
+    # WHY this replaces the old peak normalize:
+    #   The slurmify pipeline can substantially reduce perceived loudness
+    #   (RMS) without changing peak amplitude.  apply_envelope() at short
+    #   resolutions is the worst offender — a 7 ms fade on a ~16 ms slice
+    #   (1/32 @ 120 BPM) leaves no full-amplitude middle, turning each
+    #   slice into a triangle.  Triangle RMS ≈ 0.58 × rectangle RMS, so
+    #   the output sounds ~5 dB quieter than the source even though peaks
+    #   match.  Peak-normalizing to –1 dBFS doesn't recover that loss;
+    #   matching RMS does.
+    #
+    # WHAT this does:
+    #   1. Compute output RMS, compare to the source RMS we snapshot at
+    #      the top of the pipeline.
+    #   2. Apply makeup gain so output_rms ≈ source_rms.
+    #   3. Push the result through a tanh soft-limiter pinned to a
+    #      –1 dBFS ceiling.  tanh is linear for small signals (no audible
+    #      colouring on quiet passages) and asymptotes smoothly to ±0.891
+    #      so transients can't clip even when the makeup gain is large.
+    #
+    # SAFETY:
+    #   • RMS=0 input or RMS=0 output → skip the gain step (just soft-limit
+    #     so we still cap at –1 dBFS in case some other step boosts).
+    #   • Cap the makeup gain at 8× (~+18 dB) so a near-silent source
+    #     doesn't try to slam quiet output through the limiter at extreme
+    #     gain — that would make the tanh shape audible.  Anything past
+    #     this cap is genuinely too quiet to recover gracefully.
+    #   • Use float64 for the RMS math to avoid catastrophic cancellation
+    #     on very small RMS values, then cast the limiter output back to
+    #     float32 for the rest of the pipeline.
+    if _n_samples(out) > 0:
+        out_rms = float(np.sqrt(np.mean(np.square(out, dtype=np.float64))))
+        if out_rms > 1e-9 and source_rms > 1e-9:
+            gain = source_rms / out_rms
+            gain = min(gain, 8.0)         # +18 dB makeup ceiling
+            out  = out * np.float32(gain)
+            print(
+                f"[slurm] makeup gain: {20 * np.log10(gain):+.2f} dB "
+                f"(source RMS {source_rms:.4f} → output RMS {out_rms:.4f})"
+            )
+        # Soft tanh limiter pinned to –1 dBFS.  out / 0.891 puts the
+        # ceiling at the tanh argument of 1, where tanh(±1) ≈ ±0.762 —
+        # multiplying back by 0.891 puts the asymptotic ceiling at
+        # ±0.891 ≈ –1 dBFS.  Below ~0.6 the response is essentially
+        # linear (tanh(x) ≈ x for small x), so this only colours signal
+        # peaks that would have clipped anyway.
+        ceiling = 0.891
+        out = (ceiling * np.tanh(out / ceiling)).astype(np.float32)
 
     _prog(1.0, "Done ✓")
     return out, sr

@@ -47,6 +47,10 @@ folder corresponds to an item in the digest's "danger zones" list.
 | [0019](0019-bar-mask-beat-dropout.md)         | Beat mask — per-beat dropout within each bar (chip strip UI) | Accepted |
 | [0020](0020-note-mode-time-parameters.md)     | Note-mode time parameters — per-slider ms ⇄ ♪ toggle         | Accepted |
 | [0021](0021-stereo-end-to-end.md)             | Stereo end-to-end through the slurmify pipeline              | Accepted |
+| [0022](0022-tauri-react-migration.md)         | Tauri 2 + React 19 + FastAPI sidecar migration (v0.2.0)      | Accepted |
+| [0023](0023-bundle-cli-binaries-in-sidecar.md) | Bundle ffmpeg + rubberband CLIs at `_MEIPASS` root           | Accepted |
+| [0024](0024-bundle-project-assets-in-sidecar.md) | Bundle project `assets/` in the sidecar via spec `datas`   | Accepted |
+| [0025](0025-developer-id-signing-and-notarization.md) | Developer ID signing + notarization in `build-dmg.sh`  | Accepted |
 
 ## Numbering
 

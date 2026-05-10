@@ -175,9 +175,29 @@ class RenderVideoRequest(BaseModel):
 
 @router.post("/render-video")
 def start_render_video(req: RenderVideoRequest):
-    """Kick off a video-render job and return its job_id immediately."""
+    """Kick off a video-render job and return its job_id immediately.
+
+    Diagnostics: prints `[slurm-api/render-video]` lines on entry,
+    job-spawn, and (in `_run_render_blocking`) on success or failure.
+    Same posture as /upload + /burn-fx — Console.app surfaces these
+    under the `slurmify-backend` process in bundled DMGs.
+    """
+    print(
+        f"[slurm-api/render-video] received: audio_file_id={req.audio_file_id!r} "
+        f"audio_source_label={req.audio_source_label!r} "
+        f"title={req.title_text!r} creator={req.creator_text!r} "
+        f"include_source_filename={req.include_source_filename}",
+        flush=True,
+    )
+
     audio_path = resolve_file(req.audio_file_id)
     if audio_path is None:
+        print(
+            f"[slurm-api/render-video] unknown audio file_id "
+            f"{req.audio_file_id!r}",
+            file=sys.stderr,
+            flush=True,
+        )
         raise HTTPException(status_code=404, detail=f"unknown audio file_id: {req.audio_file_id}")
 
     src_input_path = (
@@ -188,6 +208,11 @@ def start_render_video(req: RenderVideoRequest):
 
     job = Job(id=str(uuid.uuid4()))
     JOBS[job.id] = job
+    print(
+        f"[slurm-api/render-video] spawned job {job.id[:8]} "
+        f"on audio_path={audio_path!r} src_input_path={src_input_path!r}",
+        flush=True,
+    )
 
     threading.Thread(
         target=_run_render_blocking,
@@ -368,9 +393,23 @@ def _run_render_blocking(
         _set(0.95, "Finalizing…")
         output_id = register_file(out_path)
         _set(1.0, "Done ✓")
+        print(
+            f"[slurm-api/render-video] OK job={job.id[:8]} "
+            f"output_id={output_id} out_path={out_path!r}",
+            flush=True,
+        )
         job.mark_done(output_id=output_id)
 
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        # Stderr so it surfaces in Console.app under the
+        # slurmify-backend process for bundled DMGs (same posture as
+        # /burn-fx after the May 2026 diagnostics retrofit).
+        print(
+            f"[slurm-api/render-video] FAILED job={job.id[:8]} "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc(file=sys.stderr)
         job.mark_done(error=f"render-video failed: {type(e).__name__}: {e}")

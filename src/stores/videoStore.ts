@@ -27,12 +27,46 @@ export interface VideoMetadata {
    *  PATCH JSON metadata blob (ADR-0008).  Off by default because
    *  some users prefer not to leak source-file names. */
   includeSourceFilename: boolean
+  /** Audio source for the render.
+   *
+   *    "fx-burned" — DEFAULT.  The render carries the FX chain baked
+   *                  into the audio.  If a burn already exists
+   *                  (`fxStore.burnedFileId`), we reuse it; otherwise
+   *                  the render flow auto-runs /burn-fx first using
+   *                  the live FX-params and then encodes the resulting
+   *                  file into the MP4.  When all FX depths are at 0
+   *                  the burn is effectively a no-op pass-through, so
+   *                  this default is safe even for users who haven't
+   *                  touched the FX rack — they get a dry-equivalent
+   *                  output with the cost of one extra DSP pass.
+   *    "slurm"     — explicit opt-out.  Always uses the dry slurm
+   *                  output, never burns FX.  This is the
+   *                  "clean / no FX" toggle users keep asking for.
+   *    "auto"      — LEGACY alias.  Treated as "fx-burned" by
+   *                  useRenderVideoJob.  Kept in the type so old
+   *                  persisted state from v0.2.0.0 doesn't reset to
+   *                  default on first load after the upgrade.
+   *
+   * Persisted alongside title/creator so the choice survives reloads —
+   * a user who always wants clean exports keeps that preference.
+   *
+   * History: pre-W5b "auto" was the default and meant "burned if
+   * exists else slurm".  Users would dial up FX, hit render, get a
+   * dry MP4 (because they hadn't separately clicked burn-FX), and
+   * conclude "the YouTube render won't add my effects".  Flipping
+   * the default to "fx-burned" + auto-burning when needed makes the
+   * UX match the user's mental model: "I dialed FX, the export has
+   * FX".  The explicit `slurm` option remains for users who DO want
+   * a dry render.
+   */
+  audioSource: "auto" | "slurm" | "fx-burned"
 }
 
 export const defaultVideoMetadata = (): VideoMetadata => ({
   title:                 "",
   creator:               "",
   includeSourceFilename: false,
+  audioSource:           "fx-burned",
 })
 
 interface VideoJobState {

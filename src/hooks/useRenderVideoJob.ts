@@ -23,6 +23,7 @@ import { useVideoStore } from "@/stores/videoStore"
 import { useSlurmStore, type SlurmParams } from "@/stores/slurmStore"
 import { useFxStore, type FxParams } from "@/stores/fxStore"
 import type { VideoMetadata } from "@/stores/videoStore"
+import { useBurnFxJob } from "@/hooks/useBurnFxJob"
 
 interface RenderRequestPaths {
   audioFileId:       string
@@ -102,6 +103,11 @@ export function useRenderVideoJob(): RenderVideoJobApi {
   const updateRender = useVideoStore((s) => s.updateRender)
   const finishRender = useVideoStore((s) => s.finishRender)
 
+  // We may need to auto-burn FX before rendering (the new default —
+  // see below).  useBurnFxJob.run returns the burned file_id (or null)
+  // so we can chain directly without watching fxStore for state changes.
+  const { run: burnRun } = useBurnFxJob()
+
   const cancel = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
@@ -114,32 +120,90 @@ export function useRenderVideoJob(): RenderVideoJobApi {
     const fxState = useFxStore.getState()
     const meta    = useVideoStore.getState().metadata
 
-    // Resolve which audio source to encode.  Burned > slurm > raw.
+    // Resolve which audio source to encode.  Three modes (see
+    // videoStore.ts for the full rationale + history):
+    //
+    //   "fx-burned" (DEFAULT)
+    //     Bake FX into the render.  Reuse `fxState.burnedFileId` if
+    //     present; otherwise auto-run /burn-fx first and use the
+    //     resulting file_id.  This is the "what users actually
+    //     mean when they dial up FX and click render" path.
+    //
+    //   "slurm"
+    //     Explicit dry / no-FX export.  Errors if no slurm output
+    //     exists yet (VideoBody handles auto-slurmifying via the
+    //     slurmRun() pre-check, so by the time we get here
+    //     `slurm.output` should be populated).
+    //
+    //   "auto" (legacy alias)
+    //     Treated as "fx-burned" — same auto-burn-then-render flow.
+    //     We keep the type variant so v0.2.0.0 persisted state
+    //     doesn't reset to default on upgrade.
+    //
+    // Fall-through to raw source is only used in the rare case where
+    // no slurm output AND no burned FX exist AND a sourceFile is
+    // present — render the raw upload as-is.
+    const audioSource = meta.audioSource ?? "fx-burned"
     let paths: RenderRequestPaths
-    if (fxState.burnedFileId) {
-      paths = {
-        audioFileId:       fxState.burnedFileId,
-        audioSourceLabel:  "FX-burned output",
-        srcInputFileId:    slurm.sourceFile?.file_id ?? null,
+
+    if (audioSource === "slurm") {
+      // Explicit dry pick.
+      if (!slurm.output) {
+        finishRender(null, "no slurm output to render — click slurmify first")
+        return
       }
-    } else if (slurm.output) {
       paths = {
         audioFileId:       slurm.output.output_id,
         audioSourceLabel:  "slurm output",
         srcInputFileId:    slurm.sourceFile?.file_id ?? null,
       }
-    } else if (slurm.sourceFile) {
-      // No slurmify run yet — render the raw upload.  Rare flow but
-      // valid (e.g. a user just wants a YouTube-ready container for
-      // an arbitrary audio file).
-      paths = {
-        audioFileId:       slurm.sourceFile.file_id,
-        audioSourceLabel:  "raw source",
-        srcInputFileId:    slurm.sourceFile.file_id,
-      }
     } else {
-      finishRender(null, "no audio source to render")
-      return
+      // "fx-burned" or "auto" (legacy) — both go through the same
+      // FX-on path.
+
+      // Step 1: figure out which file to burn FX onto.  Prefer the
+      // slurm output (most useful — slurm rhythms + FX), fall back to
+      // raw source (the "no slurmify needed, FX over the original"
+      // case, rare but valid).
+      const burnSourceId =
+        slurm.output?.output_id ?? slurm.sourceFile?.file_id ?? null
+
+      if (!burnSourceId) {
+        finishRender(
+          null,
+          "no audio source to render — drop a file or click slurmify first",
+        )
+        return
+      }
+
+      // Step 2: ALWAYS run a fresh /burn-fx pass so the rendered MP4
+      // reflects the user's CURRENT FX-knob state rather than whatever
+      // was burned at some earlier point in the session.  This is the
+      // mental-model match that motivated the W5b "FX-on-by-default"
+      // change in the first place: a user who dials up reverb, then
+      // clicks render YouTube MP4, expects to hear that reverb in
+      // the export — not the FX state from when they last clicked
+      // "burn FX" five minutes ago.  The cost is one extra ~5–15 s
+      // burn pass; the pre-existing fxStore.burnedFileId still gets
+      // refreshed (so the OUTPUT player swaps to the latest burn at
+      // the same time).  Users who want to skip the burn entirely can
+      // pick "clean slurm (dry)" in the audio selector.
+      const burnedFileId = await burnRun(burnSourceId)
+      if (!burnedFileId) {
+        // burnRun already populated fxStore.error; surface that as
+        // the render error too so the user sees ONE message in the
+        // VIDEO module instead of having to glance over at FX.
+        const burnErr =
+          useFxStore.getState().error ?? "auto-burn FX failed"
+        finishRender(null, `auto-burn FX before render failed: ${burnErr}`)
+        return
+      }
+
+      paths = {
+        audioFileId:       burnedFileId,
+        audioSourceLabel:  "FX-burned output",
+        srcInputFileId:    slurm.sourceFile?.file_id ?? null,
+      }
     }
 
     cancel()

@@ -30,15 +30,19 @@ export async function readBackendDiscovery(): Promise<BackendDiscovery> {
   return invoke<BackendDiscovery>("read_backend_discovery")
 }
 
-/** Probe /health to confirm the backend is alive at the given port. */
+/** Probe /health to confirm the backend is alive at the given port.
+ *
+ *  Timeout was bumped from 1.5 s to 6 s after Phase D shipped: the
+ *  bundled PyInstaller backend can be busy doing librosa.load on a
+ *  freshly-uploaded m4a/mp4 (audioread → ffmpeg subprocess fallback)
+ *  and won't service /health within 1.5 s on cold cache.  6 s is
+ *  more than enough for any realistic backend response while still
+ *  catching genuinely-dead ports inside a user-noticeable window. */
 export async function probeHealth(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
       method: "GET",
-      // Short timeout — the backend is local; if it doesn't answer
-      // in 1.5s something is wrong.  AbortController is the only
-      // way fetch() takes a timeout.
-      signal: AbortSignal.timeout(1500),
+      signal: AbortSignal.timeout(6000),
     })
     if (!res.ok) return false
     const body = await res.json() as { ready?: boolean }

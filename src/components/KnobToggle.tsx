@@ -62,7 +62,8 @@ export function KnobToggle({
 
       <div
         className={cn(
-          "text-[10px] uppercase tracking-[0.05em] text-slurm-muted",
+          "panel-label",
+          "text-[10px] text-slurm-muted",
           "leading-tight text-center",
         )}
       >
@@ -71,7 +72,8 @@ export function KnobToggle({
 
       <div
         className={cn(
-          "text-[11px] font-mono uppercase tabular-nums leading-tight",
+          "lcd",
+          "text-[13px] uppercase tabular-nums leading-tight",
           checked ? "text-primary" : "text-slurm-muted",
         )}
       >

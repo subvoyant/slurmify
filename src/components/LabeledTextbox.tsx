@@ -48,6 +48,14 @@ export interface LabeledTextboxProps
 
   /** Wrapper className. */
   wrapperClassName?: string
+
+  /** When true, the label is content-sized (instead of the default
+   *  fixed `w-32` 128 px) and sits with a tight `gap-2` against the
+   *  input.  Use for inline / horizontal layouts where the default
+   *  fixed-width label leaves an awkward visual gap that makes the
+   *  label and input look disconnected.  Default `false` preserves
+   *  the legacy stacked-row behavior. */
+  compactLabel?: boolean
 }
 
 export function LabeledTextbox({
@@ -60,10 +68,17 @@ export function LabeledTextbox({
   tooltip,
   inputWidth = "8rem",
   wrapperClassName,
+  compactLabel = false,
   disabled,
   className,
   ...inputProps
 }: LabeledTextboxProps) {
+  // Same compact-label trick as LabeledSelect — content-sized label
+  // + tighter row gap so the label visually anchors to the input.
+  const labelClasses = compactLabel
+    ? "shrink-0 text-[12px] text-slurm-muted select-none"
+    : "w-32 shrink-0 text-[12px] text-slurm-muted select-none"
+  const rowGap = compactLabel ? "gap-2" : "gap-3"
   return (
     <div
       className={cn(
@@ -72,22 +87,23 @@ export function LabeledTextbox({
         wrapperClassName,
       )}
     >
-      <div className="flex items-center gap-3">
-        {/* Label — fixed 128px width to align with LabeledSlider /
-            Switch / Select rows when stacked together. */}
+      <div className={cn("flex items-center", rowGap)}>
+        {/* Label — fixed 128px width by default to align with
+            LabeledSlider/Switch/Select rows when stacked together;
+            content-sized when compactLabel is on for inline layouts. */}
         {tooltip ? (
           <Tip text={tooltip}>
             <label
               className={cn(
-                "w-32 shrink-0 text-[12px] text-slurm-muted",
-                "select-none cursor-help underline decoration-dotted decoration-slurm-border-2 underline-offset-4",
+                labelClasses,
+                "cursor-help underline decoration-dotted decoration-slurm-border-2 underline-offset-4",
               )}
             >
               {label}
             </label>
           </Tip>
         ) : (
-          <label className="w-32 shrink-0 text-[12px] text-slurm-muted select-none">
+          <label className={labelClasses}>
             {label}
           </label>
         )}
@@ -113,7 +129,10 @@ export function LabeledTextbox({
       </div>
 
       {hint && (
-        <div className="ml-32 pl-3 text-[10px] text-slurm-muted">{hint}</div>
+        <div className={cn(
+          "text-[10px] text-slurm-muted",
+          compactLabel ? "" : "ml-32 pl-3",
+        )}>{hint}</div>
       )}
     </div>
   )

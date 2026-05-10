@@ -1,11 +1,21 @@
 {
   "$schema":     "../gen/schemas/desktop-schema.json",
   "identifier":  "default",
-  "description": "Default capabilities for the Slurmify main window. Custom #[tauri::command] handlers (read_backend_discovery, reveal_in_finder) are auto-allowed by core:default — no separate entry needed.",
+  "description": "Default capabilities for the Slurmify main window. Custom #[tauri::command] handlers (read_backend_discovery, reveal_in_finder, quit_app) are auto-allowed by core:default. The sidecar permission below grants the shell plugin the right to spawn the bundled Python backend binary.",
   "windows":     ["main"],
   "permissions": [
     "core:default",
     "shell:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/slurmify-backend",
+          "sidecar": true,
+          "args": []
+        }
+      ]
+    },
     "fs:default",
     "fs:allow-read-text-file",
     "fs:allow-temp-read",

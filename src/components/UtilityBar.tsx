@@ -25,14 +25,16 @@
 // ──────────────────────────────────────────────────────────────────────
 
 import { useCallback } from "react"
-import { Dices, FolderOpen } from "lucide-react"
+import { Dices, FolderOpen, MessageSquare, Power, Sparkles } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { Button } from "@/components/ui/button"
 import { Tip } from "@/components/ui/tooltip"
 import { useSlurmStore, type SlurmParams } from "@/stores/slurmStore"
+import { useUiPrefsStore } from "@/stores/uiPrefsStore"
 import { getHealth } from "@/lib/api"
 import { RESOLUTION_OPTIONS, type Resolution } from "@/components/ResolutionPicker"
 import { EasterEggHover } from "@/components/EasterEggHover"
+import { cn } from "@/lib/utils"
 
 // ── Easter-egg gif imports ────────────────────────────────────────────
 // Hoberman-Max springs up from the 🎲 randomize-all button (he's the
@@ -86,6 +88,40 @@ function rollSlurmParams(): Partial<SlurmParams> {
 export function UtilityBar() {
   const setParam  = useSlurmStore((s) => s.setParam)
   const isRunning = useSlurmStore((s) => s.isRunning)
+  // hasSource feeds the randomize-button enable state.  Pre-W5b the
+  // whole UtilityBar was conditional on hasSource at the App.tsx
+  // level — but now that this lives inside the always-visible TopBar
+  // (so quit / tips / eggs / reveal-temp work even before a file is
+  // loaded), we need to disable just the operations that don't make
+  // sense without a source.  Reveal-temp is fine pre-source: the
+  // session-temp dir exists from the moment the sidecar boots.
+  const hasSource = useSlurmStore((s) => !!s.sourceFile)
+
+  // UI-preferences toggles (tooltips on/off, easter eggs on/off).
+  // Defaults are both true; reading + writing through Zustand so the
+  // user's choice survives reloads via persist middleware.
+  const tooltipsEnabled    = useUiPrefsStore((s) => s.tooltipsEnabled)
+  const easterEggsEnabled  = useUiPrefsStore((s) => s.easterEggsEnabled)
+  const setTooltipsEnabled = useUiPrefsStore((s) => s.setTooltipsEnabled)
+  const setEasterEggsEnabled = useUiPrefsStore((s) => s.setEasterEggsEnabled)
+
+  // Quit handler — fires the Tauri quit_app command which calls
+  // `app.exit(0)` Rust-side, gracefully running the Exit event hook
+  // (Python sidecar SIGTERM cleanup, plugin teardown).  Wrapped in a
+  // confirm() so a stray click doesn't lose in-flight slurm state;
+  // confirm is fine here, no extra modal infrastructure needed.
+  const onQuit = useCallback(() => {
+    if (isRunning) {
+      const ok = confirm(
+        "A slurmify job is running.  Quitting will abort it and discard the partial output.  Quit anyway?",
+      )
+      if (!ok) return
+    }
+    void invoke("quit_app").catch((e) => {
+      console.error("[slurm] quit_app failed:", e)
+      alert(`quit failed: ${(e as Error).message ?? e}`)
+    })
+  }, [isRunning])
 
   const onRandomize = useCallback(() => {
     if (isRunning) return
@@ -127,8 +163,15 @@ export function UtilityBar() {
     }
   }, [])
 
+  // Note on layout: this component used to live in its own row, hence
+  // its outer flex container.  After W5b it sits inside <TopBar>
+  // alongside <PresetBar>; we set `flex-1` so this group expands to
+  // fill all the space PresetBar didn't claim, which lets the
+  // internal `ml-auto` on the tips/eggs/quit cluster push those
+  // controls to the rightmost edge of the WHOLE bar (not just the
+  // rightmost edge of UtilityBar).
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-1 items-center gap-2">
       {/* Hoberman-Max springs up from below the 🎲 randomize button —
           v0.1.6 gif sized 145×120 (landscape).  Same bouncy
           cubic-bezier as Bob for visual consistency between the two
@@ -155,7 +198,10 @@ export function UtilityBar() {
             size="sm"
             variant="ghost"
             onClick={onRandomize}
-            disabled={isRunning}
+            // Disabled while a slurm is in flight (would race the live
+            // params) AND when no source file is loaded (no point
+            // randomising knobs that aren't connected to anything yet).
+            disabled={isRunning || !hasSource}
           >
             <Dices />
             randomize
@@ -203,6 +249,94 @@ export function UtilityBar() {
           </Button>
         </Tip>
       </EasterEggHover>
+
+      {/* ── UI-prefs toggles + quit ───────────────────────────────────
+          Pushed to the right via ml-auto so the action-style controls
+          (randomize, reveal) stay anchored on the LEFT and the
+          UI-mode switches + the quit button cluster on the RIGHT.
+          Visual mode of each toggle: when ON the icon button uses
+          the primary accent (text-primary, ring on focus); when OFF
+          the icon goes to muted text and the button reads as
+          quieter — same treatment as a depressed pedal switch on a
+          guitar amp. */}
+      <div className="ml-auto flex items-center gap-1.5">
+        <Tip
+          text={
+            <span>
+              <strong>tooltips {tooltipsEnabled ? "on" : "off"}</strong>{" "}
+              — toggle every hover-help bubble globally.  Useful for
+              clean screen recordings or once you've memorized the
+              controls.  Re-enable any time; setting persists across
+              reloads.
+            </span>
+          }
+        >
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setTooltipsEnabled(!tooltipsEnabled)}
+            aria-pressed={tooltipsEnabled}
+            className={cn(
+              tooltipsEnabled
+                ? "text-primary hover:text-primary"
+                : "text-slurm-muted",
+            )}
+          >
+            <MessageSquare />
+            {tooltipsEnabled ? "tips on" : "tips off"}
+          </Button>
+        </Tip>
+
+        <Tip
+          text={
+            <span>
+              <strong>easter eggs {easterEggsEnabled ? "on" : "off"}</strong>{" "}
+              — toggle Bob, Max, MaxFire, and Hoberman-Max globally.
+              When off, hover gifs are short-circuited entirely (no
+              GIF preload, no portal).  Recommended for clean
+              recordings; toggle back on for everyday use.
+            </span>
+          }
+        >
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setEasterEggsEnabled(!easterEggsEnabled)}
+            aria-pressed={easterEggsEnabled}
+            className={cn(
+              easterEggsEnabled
+                ? "text-primary hover:text-primary"
+                : "text-slurm-muted",
+            )}
+          >
+            <Sparkles />
+            {easterEggsEnabled ? "eggs on" : "eggs off"}
+          </Button>
+        </Tip>
+
+        <Tip
+          text={
+            <span>
+              <strong>quit</strong> — close Slurmify cleanly.  Fires
+              Tauri's exit hook so the Python backend gets a SIGTERM
+              and wipes its session-temp directory before the process
+              ends.  In-flight slurms are aborted; export anything
+              you want to keep BEFORE quitting (or use 📁 reveal temp
+              to grab files first).
+            </span>
+          }
+        >
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onQuit}
+            className="text-slurm-muted hover:text-slurm-danger"
+          >
+            <Power />
+            quit
+          </Button>
+        </Tip>
+      </div>
     </div>
   )
 }

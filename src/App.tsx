@@ -20,7 +20,7 @@
 // ──────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState } from "react"
-import { Download, Film, Flame, Loader2, RotateCcw, RotateCw, Save, Sparkles } from "lucide-react"
+import { Dices, Download, Film, Flame, Loader2, RotateCcw, RotateCw, Save, Sparkles } from "lucide-react"
 import { cn } from "./lib/utils"
 import { useBackend, type BackendStatus } from "./hooks/useBackend"
 import { useSkinStore } from "./stores/skinStore"
@@ -66,8 +66,7 @@ import { noteToMs, type NoteLabel } from "./lib/note-mode"
 import { ResolutionPicker, type Resolution } from "./components/ResolutionPicker"
 import { BeatMaskStrip } from "./components/BeatMaskStrip"
 import { InOutTrimRow } from "./components/InOutTrimRow"
-import { UtilityBar } from "./components/UtilityBar"
-import { PresetBar } from "./components/PresetBar"
+import { TopBar } from "./components/TopBar"
 import { Tip } from "./components/ui/tooltip"
 
 export function App() {
@@ -161,7 +160,7 @@ export function App() {
               clicking the version doesn't open subvoyant.com (a
               version number isn't a navigational target). */}
           <span className="lcd text-[14px] tracking-wide text-slurm-muted">
-            v0.2.0
+            v0.2.1
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -170,19 +169,20 @@ export function App() {
         </div>
       </header>
 
+      {/* ── Sticky TopBar (preset manager + utility actions) ──────── */}
+      {/* Hosted OUTSIDE <main> so its sticky positioning measures
+          against the body's scroll, not against <main>'s padding.
+          The bar's own px-3 py-1.5 supplies its internal spacing —
+          no need for the parent to pad around it.  Renders for both
+          source-loaded and empty states; randomize is internally
+          disabled when no file is loaded (UtilityBar handles it).
+          See src/components/TopBar.tsx for the full layout rationale
+          and the W5b history (merging two separate rows into one
+          sticky bar). */}
+      <TopBar />
+
       {/* ── Main rack ─────────────────────────────────────────────── */}
       <main className="flex flex-1 flex-col gap-2 p-3">
-        {/* Preset bar — saved slurmify flavors (factory + user).
-            Lives above all rack modules so picking a preset is
-            visibly an "everything updates at once" action rather
-            than tied to any single module. */}
-        <PresetBar />
-
-        {/* Utility bar — randomize-all dice + reveal-temp folder */}
-        {hasSource && (
-          <UtilityBar />
-        )}
-
         {/* INPUT module */}
         <RackModule
           color="input"
@@ -193,13 +193,28 @@ export function App() {
           <SourceModuleBody />
         </RackModule>
 
-        {/* SLICING module — gated behind a source being loaded.
-            Showing controls before there's audio to apply them to is
-            UX clutter. */}
+        {/* SLICING + STUTTER — side-by-side row.  SLICING is the
+            information-dense centerpiece (resolution chips, knob
+            trio, BPM override, beat-mask chip grid) and historically
+            ran full-width with empty horizontal space to the right
+            of the chip strip.  STUTTER's five small knobs slot
+            naturally into that empty real estate when stacked into
+            two columns, tightening the rack vertically.
+            Layout: SLICING flexes to fill remaining width, STUTTER
+            holds a fixed 320 px column on the right.  Below the lg
+            breakpoint the grid collapses to a single column and the
+            two modules stack vertically again — SLICING needs the
+            horizontal room for the resolution chip row at narrower
+            widths. */}
         {hasSource && (
-          <RackModule color="slicing" name="slicing" status="idle">
-            <SlicingBody />
-          </RackModule>
+          <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,1fr)_500px]">
+            <RackModule color="slicing" name="slicing" status="idle">
+              <SlicingBody />
+            </RackModule>
+            <RackModule color="stutter" name="stutter" status="idle">
+              <StutterBody />
+            </RackModule>
+          </div>
         )}
 
         {/* STRETCH + BEAT TRIM — side-by-side row.  These two modules
@@ -217,13 +232,6 @@ export function App() {
               <BeatTrimBody />
             </RackModule>
           </div>
-        )}
-
-        {/* STUTTER module — stutter family + reverse */}
-        {hasSource && (
-          <RackModule color="stutter" name="stutter" status="idle">
-            <StutterBody />
-          </RackModule>
         )}
 
         {/* OUTPUT module — slurmify button + progress + result.
@@ -263,9 +271,9 @@ export function App() {
             "text-[11px] leading-relaxed text-slurm-muted",
           )}
         >
-          Week 5 — video export + dancer + Bob + Max ×3 easter eggs.{" "}
+          v0.2.1 — signed + notarized DMG, FX-on-by-default for YouTube renders, sticky TopBar, asset bundling fixes.{" "}
           <span className="text-slurm-rose">
-            Next: W6 — code signing, notarization, DMG, v0.2.0 release.
+            Next: tester feedback round, then v0.3 feature work.
           </span>
         </div>
       </main>
@@ -716,8 +724,16 @@ function BeatTrimBody() {
   const beatGapMode    = useSlurmStore((s) => s.params.beat_gap_mode)
   const setParam       = useSlurmStore((s) => s.setParam)
 
+  // Three KnobNoteToggle cells with toggleLayout="right" — the ms/♪
+  // toggle and BPM hint live in a column to the RIGHT of the knob
+  // instead of stacked below it.  Each cell is ~140 px wide × ~80
+  // px tall (matching a bare LabeledKnob's height) so BEAT TRIM
+  // doesn't outgrow STRETCH vertically when the two share a row.
+  // gap-6 (24 px) between cells gives the wider cells room to
+  // breathe and reads as a deliberate horizontal layout, not a
+  // packed strip.
   return (
-    <div className="flex flex-wrap gap-3 pt-1">
+    <div className="flex flex-wrap gap-6 pt-1">
       <KnobNoteToggle
         label="trim start"
         msValue={trimStart}
@@ -727,7 +743,8 @@ function BeatTrimBody() {
         noteValue={trimStartNote}
         onNoteChange={(v: NoteLabel) => setParam("beat_trim_start_note", v)}
         mode={trimStartMode}
-        onModeChange={(m) => setParam("beat_trim_start_mode", m)}
+        onModeChange={(m) => setParam("beat_trim_start_mode", m as "ms" | "♪")}
+        toggleLayout="right"
         tooltip={
           <>
             Removes the first N ms (or one note value) of every slice
@@ -748,7 +765,8 @@ function BeatTrimBody() {
         noteValue={trimEndNote}
         onNoteChange={(v: NoteLabel) => setParam("beat_trim_end_note", v)}
         mode={trimEndMode}
-        onModeChange={(m) => setParam("beat_trim_end_mode", m)}
+        onModeChange={(m) => setParam("beat_trim_end_mode", m as "ms" | "♪")}
+        toggleLayout="right"
         tooltip={
           <>
             Removes the last N ms (or one note value) of every slice.
@@ -767,7 +785,8 @@ function BeatTrimBody() {
         noteValue={beatGapNote}
         onNoteChange={(v: NoteLabel) => setParam("beat_gap_note", v)}
         mode={beatGapMode}
-        onModeChange={(m) => setParam("beat_gap_mode", m)}
+        onModeChange={(m) => setParam("beat_gap_mode", m as "ms" | "♪")}
+        toggleLayout="right"
         tooltip={
           <>
             Inserts N ms (or one note value) of silence BETWEEN every
@@ -796,93 +815,141 @@ function StutterBody() {
   const reverseChance   = useSlurmStore((s) => s.params.reverse_chance)
   const setParam        = useSlurmStore((s) => s.setParam)
 
+  // Olympic-rings layout — STUTTER lives in a 500 px column beside
+  // SLICING.  A 6-column × 2-row grid splits the rack width into 6
+  // equal slots; each knob spans 2 slots (centered in its span), and
+  // the bottom row's slots are shifted by 1 so the bottom knobs sit
+  // BETWEEN the top three.  Visual map:
+  //
+  //  cols  1  2  3  4  5  6
+  //  row1 [chance] [reps  ] [revers]   ← top three at slots 1-2 / 3-4 / 5-6
+  //  row2    [skip ] [spread]          ← bottom two at slots 2-3 / 4-5
+  //
+  //   ●   ●   ●     ← centers at 1/6, 3/6, 5/6 of rack width
+  //     ●   ●       ← centers at 2/6, 4/6 — the midpoints between top centers
+  //
+  // Vertical compression — the row-2 cells use `-mt-8` (-32 px) to
+  // pull the bottom row up into the negative space below the top
+  // knobs' value text.  Combined with `gap-y-0` on the grid, this
+  // overlaps the bottom knobs' tops with the bottom of the top
+  // knobs' label/value text — the Olympic-rings stagger, not just
+  // a 2-row grid.  The bottom-row cells live in the same column
+  // tracks as the top row but their CONTENT is offset upward, so
+  // there's no horizontal collision (the top-row cells are at slots
+  // 1-2 / 3-4 / 5-6 and bottom-row at 2-3 / 4-5, no overlap).
+  // place-items-center horizontally centers each knob inside its
+  // 2-col span so a 76 px knob and a 96 px knob both anchor at
+  // their slot's midpoint.
   return (
-    <div className="flex flex-wrap gap-3 pt-1">
-      <LabeledKnob
-        label="chance"
-        value={stutterChance}
-        onChange={(v) => setParam("stutter_chance", v)}
-        min={0} max={1} step={0.05}
-        defaultValue={0}
-        formatValue={(v) => v.toFixed(2)}
-        tooltip={
-          <>
-            Probability that each slice is stuttered (repeated).{" "}
-            <strong>0</strong> = no stutter ever.{" "}
-            <strong>0.5</strong> = roughly half. <strong>1</strong>{" "}
-            = every slice stutters.
-          </>
-        }
-      />
-      <KnobNoteToggle
-        label="skip"
-        msValue={stutterSkip}
-        onMsChange={(v) => setParam("stutter_skip_ms", v)}
-        msMin={0} msMax={500} msStep={5}
-        msDefault={0}
-        noteValue={stutterSkipNote}
-        onNoteChange={(v: NoteLabel) => setParam("stutter_skip_note", v)}
-        mode={stutterSkipMode}
-        onModeChange={(m) => setParam("stutter_skip_mode", m)}
-        tooltip={
-          <>
-            How far back into each slice the stutter "head" replays.
-            <strong> 0</strong> = classic full-slice repeats.{" "}
-            <strong>5-15 ms</strong> = glitch buzz.{" "}
-            <strong>20-50 ms</strong> = CD-skip.{" "}
-            <strong>100+</strong> = phrase loop. In ♪ mode the skip
-            length is BPM-locked — pick "1/32" for a tight glitch
-            that always sits on the grid.
-          </>
-        }
-      />
-      <LabeledKnob
-        label="reps max"
-        value={stutterReps}
-        onChange={(v) => setParam("stutter_max_reps", v)}
-        min={0} max={16} step={1}
-        defaultValue={0}
-        formatValue={(v) => v.toFixed(0)}
-        tooltip={
-          <>
-            Upper bound on the random repeat count per stutter event.
-            Engine picks 2 to N. Higher = denser, machine-gun
-            patterns. <strong>0</strong> disables stutter entirely.
-          </>
-        }
-      />
-      <LabeledKnob
-        label="spread"
-        value={stutterSpread}
-        onChange={(v) => setParam("stutter_spread", v)}
-        min={0} max={1} step={0.05}
-        defaultValue={0}
-        formatValue={(v) => v.toFixed(2)}
-        tooltip={
-          <>
-            Skip-length variance per stutter.{" "}
-            <strong>0</strong> = uniform.{" "}
-            <strong>1.0</strong> = each stutter picks its own random
-            head length — mixes glitch blips, medium skips, and
-            phrase stutters organically.
-          </>
-        }
-      />
-      <LabeledKnob
-        label="reverse"
-        value={reverseChance}
-        onChange={(v) => setParam("reverse_chance", v)}
-        min={0} max={1} step={0.05}
-        defaultValue={0}
-        formatValue={(v) => v.toFixed(2)}
-        tooltip={
-          <>
-            Probability that each slice plays backwards. Independent
-            of stutter — a slice can be reversed AND stuttered.
-            Stereo channels reverse together.
-          </>
-        }
-      />
+    <div className="grid grid-cols-6 grid-rows-2 gap-y-0 pt-1 place-items-center">
+      {/* TOP ROW — chance / reps max / reverse at slots 1-2 / 3-4 / 5-6.
+          DOM order matches reading order (left → right) so the tab
+          sequence is natural even though grid placement is explicit. */}
+      <div className="row-start-1 col-start-1 col-span-2 flex justify-center">
+        <LabeledKnob
+          label="chance"
+          value={stutterChance}
+          onChange={(v) => setParam("stutter_chance", v)}
+          min={0} max={1} step={0.05}
+          defaultValue={0}
+          formatValue={(v) => v.toFixed(2)}
+          tooltip={
+            <>
+              Probability that each slice is stuttered (repeated).{" "}
+              <strong>0</strong> = no stutter ever.{" "}
+              <strong>0.5</strong> = roughly half. <strong>1</strong>{" "}
+              = every slice stutters.
+            </>
+          }
+        />
+      </div>
+      <div className="row-start-1 col-start-3 col-span-2 flex justify-center">
+        <LabeledKnob
+          label="reps max"
+          value={stutterReps}
+          onChange={(v) => setParam("stutter_max_reps", v)}
+          min={0} max={16} step={1}
+          defaultValue={0}
+          formatValue={(v) => v.toFixed(0)}
+          tooltip={
+            <>
+              Upper bound on the random repeat count per stutter event.
+              Engine picks 2 to N. Higher = denser, machine-gun
+              patterns. <strong>0</strong> disables stutter entirely.
+            </>
+          }
+        />
+      </div>
+      <div className="row-start-1 col-start-5 col-span-2 flex justify-center">
+        <LabeledKnob
+          label="reverse"
+          value={reverseChance}
+          onChange={(v) => setParam("reverse_chance", v)}
+          min={0} max={1} step={0.05}
+          defaultValue={0}
+          formatValue={(v) => v.toFixed(2)}
+          tooltip={
+            <>
+              Probability that each slice plays backwards. Independent
+              of stutter — a slice can be reversed AND stuttered.
+              Stereo channels reverse together.
+            </>
+          }
+        />
+      </div>
+
+      {/* BOTTOM ROW — skip / spread at slots 2-3 / 4-5, sitting in
+          the column gaps between the top three for an Olympic-rings
+          stagger.  -mt-8 (-32 px) pulls these cells UP into the
+          negative space below the top row's value text so the bottom
+          knobs visually overlap the top knobs' labels/values, like
+          the bottom row of an Olympic-rings logo nesting into the
+          gaps of the top row.  Skip is taller (KnobNoteToggle's mode
+          toggle + hint) — the row track auto-grows to fit; spread
+          top-aligns via its outer flex cell. */}
+      <div className="row-start-2 col-start-2 col-span-2 flex justify-center -mt-8">
+        <KnobNoteToggle
+          label="skip"
+          msValue={stutterSkip}
+          onMsChange={(v) => setParam("stutter_skip_ms", v)}
+          msMin={0} msMax={500} msStep={5}
+          msDefault={0}
+          noteValue={stutterSkipNote}
+          onNoteChange={(v: NoteLabel) => setParam("stutter_skip_note", v)}
+          mode={stutterSkipMode}
+          onModeChange={(m) => setParam("stutter_skip_mode", m as "ms" | "♪")}
+          tooltip={
+            <>
+              How far back into each slice the stutter "head" replays.
+              <strong> 0</strong> = classic full-slice repeats.{" "}
+              <strong>5-15 ms</strong> = glitch buzz.{" "}
+              <strong>20-50 ms</strong> = CD-skip.{" "}
+              <strong>100+</strong> = phrase loop. In ♪ mode the skip
+              length is BPM-locked — pick "1/32" for a tight glitch
+              that always sits on the grid.
+            </>
+          }
+        />
+      </div>
+      <div className="row-start-2 col-start-4 col-span-2 flex justify-center -mt-8">
+        <LabeledKnob
+          label="spread"
+          value={stutterSpread}
+          onChange={(v) => setParam("stutter_spread", v)}
+          min={0} max={1} step={0.05}
+          defaultValue={0}
+          formatValue={(v) => v.toFixed(2)}
+          tooltip={
+            <>
+              Skip-length variance per stutter.{" "}
+              <strong>0</strong> = uniform.{" "}
+              <strong>1.0</strong> = each stutter picks its own random
+              head length — mixes glitch blips, medium skips, and
+              phrase stutters organically.
+            </>
+          }
+        />
+      </div>
     </div>
   )
 }
@@ -903,7 +970,6 @@ function StutterBody() {
 function OutputModule() {
   const isRunning = useSlurmStore((s) => s.isRunning)
   const progress  = useSlurmStore((s) => s.progress)
-  const desc      = useSlurmStore((s) => s.desc)
   const error     = useSlurmStore((s) => s.error)
   const output    = useSlurmStore((s) => s.output)
 
@@ -991,7 +1057,10 @@ function OutputBody() {
   }
 
   // Seed is stored as `number | null`; edited as a string for the
-  // same reasons BPM is.  Empty = "fresh randomness each run".
+  // same reasons BPM is.  Empty = "auto-pick on next slurm" — the
+  // useSlurmifyJob hook pre-rolls and persists the chosen value, so
+  // after a run the field always shows the seed that was used and
+  // the user can copy it for reproducible re-runs.
   const [seedText, setSeedText] = useState<string>(seed === null ? "" : String(seed))
   useEffect(() => {
     setSeedText(seed === null ? "" : String(seed))
@@ -1010,107 +1079,149 @@ function OutputBody() {
       setSeedText(seed === null ? "" : String(seed))
     }
   }
+  // Dice button — rolls a fresh random seed and writes it both into
+  // params (so the slurm uses it) and into the visible textbox.
+  // Same 0..999_999 range as the auto-pre-roll in useSlurmifyJob, so
+  // a manual roll and an auto roll are interchangeable.
+  const rollSeed = () => {
+    const n = Math.floor(Math.random() * 1_000_000)
+    setParam("seed", n)
+    setSeedText(String(n))
+  }
 
   const { run } = useSlurmifyJob()
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Format dropdown — picks the export format slurmcore writes to. */}
-      <LabeledSelect
-        label="format"
-        value={outputFormat}
-        onValueChange={(v) =>
-          setParam(
-            "output_format",
-            v as "wav" | "mp3" | "flac" | "ogg" | "aiff" | "aac",
-          )
-        }
-        options={[
-          { value: "wav",  label: "WAV (16-bit PCM, lossless)" },
-          { value: "flac", label: "FLAC (lossless compressed)" },
-          { value: "mp3",  label: "MP3 (~190 kbps VBR)" },
-          { value: "aac",  label: "AAC / m4a (192 kbps)" },
-          { value: "ogg",  label: "OGG Vorbis (lossy)" },
-          { value: "aiff", label: "AIFF (16-bit PCM)" },
-        ]}
-        triggerWidth="13rem"
-        disabled={isRunning}
-        tooltip={
-          <>
-            Container format for the slurm output file. WAV / FLAC /
-            AIFF are lossless. MP3 / AAC / OGG are lossy and smaller.
-            All preserve the source's channel count (mono in →
-            mono out; stereo in → stereo out).
-          </>
-        }
-        hint="output container — wav/flac/aiff are lossless"
-      />
-
-      {/* Seed — empty = fresh randomness; integer = reproducible runs */}
-      <LabeledTextbox
-        label="seed"
-        value={seedText}
-        onChange={setSeedText}
-        onBlur={commitSeed}
-        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
-        type="number"
-        min={0}
-        step={1}
-        placeholder="random"
-        inputWidth="8rem"
-        disabled={isRunning}
-        tooltip={
-          <>
-            RNG seed for reproducible slurmify runs. Same seed + same
-            params = bit-for-bit identical output. Affects: MAX RANDOM
-            slice durations, slice shuffle order, reverse / stutter
-            chance rolls, stutter length spread. Empty = fresh
-            randomness on every run (default).
-          </>
-        }
-      />
-
-      {/* Action row — Slurmify button + status text */}
-      <div className="flex items-center gap-3">
-        <Tip
-          text={
-            isRunning
-              ? "A slurmify job is in progress. Wait for it to finish or stop the backend to abort."
-              : "Run the full slurmify pipeline: stretch → slice → per-slice DSP → concat → normalize. Output appears below when done."
+      {/* Top action bar — format dropdown + seed textbox on the LEFT,
+          slurmify button + status on the RIGHT.  All three controls
+          (and the inline status) live on a single horizontal line so
+          OUTPUT collapses from a 3-row stack to a single header
+          row + the waveform below.  Format's "output container —
+          wav/flac/aiff are lossless" hint is dropped to keep the row
+          at one consistent height; the option labels themselves
+          ("WAV (16-bit PCM, lossless)" etc.) already convey the same
+          information.  flex-wrap lets the button drop to the next
+          line on very narrow viewports rather than overflow. */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <LabeledSelect
+          label="format"
+          value={outputFormat}
+          onValueChange={(v) =>
+            setParam(
+              "output_format",
+              v as "wav" | "mp3" | "flac" | "ogg" | "aiff" | "aac",
+            )
           }
-        >
-          <Button
-            size="lg"
-            variant="default"
-            disabled={isRunning}
-            onClick={() => void run()}
-            className="min-w-[140px]"
+          options={[
+            { value: "wav",  label: "WAV (16-bit PCM, lossless)" },
+            { value: "flac", label: "FLAC (lossless compressed)" },
+            { value: "mp3",  label: "MP3 (~190 kbps VBR)" },
+            { value: "aac",  label: "AAC / m4a (192 kbps)" },
+            { value: "ogg",  label: "OGG Vorbis (lossy)" },
+            { value: "aiff", label: "AIFF (16-bit PCM)" },
+          ]}
+          triggerWidth="13rem"
+          disabled={isRunning}
+          compactLabel
+          tooltip={
+            <>
+              Container format for the slurm output file. WAV / FLAC /
+              AIFF are lossless. MP3 / AAC / OGG are lossy and smaller.
+              All preserve the source's channel count (mono in →
+              mono out; stereo in → stereo out).
+            </>
+          }
+        />
+
+        {/* Seed — pre-rolled by useSlurmifyJob if blank, so after a
+            run the field shows the actual seed used.  Dice button
+            rerolls on demand — same range (0..999_999) as the
+            auto-pre-roll, so manual and auto rolls are interchangeable. */}
+        <LabeledTextbox
+          label="seed"
+          value={seedText}
+          onChange={setSeedText}
+          onBlur={commitSeed}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+          type="number"
+          min={0}
+          step={1}
+          placeholder="random"
+          inputWidth="7rem"
+          disabled={isRunning}
+          compactLabel
+          extras={
+            <Tip text="Roll a fresh random seed.  The new value is written into the field immediately so you can see it before slurmifying.  Same 0..999_999 range as the auto-pick that runs when you slurmify with the seed left blank.">
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 shrink-0"
+                onClick={rollSeed}
+                disabled={isRunning}
+                aria-label="roll random seed"
+              >
+                <Dices className="h-4 w-4" />
+              </Button>
+            </Tip>
+          }
+          tooltip={
+            <>
+              RNG seed for reproducible slurmify runs. Same seed + same
+              params = bit-for-bit identical output. Affects: MAX RANDOM
+              slice durations, slice shuffle order, reverse / stutter
+              chance rolls, stutter length spread.{" "}
+              <strong>Empty</strong> = a fresh seed is rolled on the
+              next slurmify and written here so you can see + copy it.
+              Click the dice to roll one manually right now.
+            </>
+          }
+        />
+
+        {/* Slurmify button + status — pushed to the right via
+            ml-auto so it always sits flush with the panel's right
+            edge regardless of how wide format/seed render. */}
+        <div className="ml-auto flex items-center gap-3">
+          <Tip
+            text={
+              isRunning
+                ? "A slurmify job is in progress. Wait for it to finish or stop the backend to abort."
+                : "Run the full slurmify pipeline: stretch → slice → per-slice DSP → concat → normalize. Output appears below when done."
+            }
           >
-            {isRunning ? (
-              <>
-                <Loader2 className="animate-spin" />
-                slurmifying…
-              </>
-            ) : (
-              <>
-                <Sparkles />
-                slurmify
-              </>
-            )}
-          </Button>
-        </Tip>
+            <Button
+              size="lg"
+              variant="default"
+              disabled={isRunning}
+              onClick={() => void run()}
+              className="min-w-[140px]"
+            >
+              {isRunning ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  slurmifying…
+                </>
+              ) : (
+                <>
+                  <Sparkles />
+                  slurmify
+                </>
+              )}
+            </Button>
+          </Tip>
 
-        {/* Inline progress label — what step are we on */}
-        {isRunning && (
-          <span className="text-[11px] tabular-nums text-slurm-muted">
-            {desc || "starting…"}
-          </span>
-        )}
+          {/* Inline progress label — what step are we on */}
+          {isRunning && (
+            <span className="text-[11px] tabular-nums text-slurm-muted">
+              {desc || "starting…"}
+            </span>
+          )}
 
-        {/* Error message — surfaces backend / SSE errors */}
-        {error && !isRunning && (
-          <span className="text-[11px] text-slurm-danger">{error}</span>
-        )}
+          {/* Error message — surfaces backend / SSE errors */}
+          {error && !isRunning && (
+            <span className="text-[11px] text-slurm-danger">{error}</span>
+          )}
+        </div>
       </div>
 
       {/* Progress bar — only visible while running */}
@@ -1544,7 +1655,7 @@ function FxBody() {
               noteValue={fx.delayTimeNote}
               onNoteChange={(v: NoteLabel) => setFxParam("delayTimeNote", v)}
               mode={fx.delayTimeMode}
-              onModeChange={(m) => setFxParam("delayTimeMode", m)}
+              onModeChange={(m) => setFxParam("delayTimeMode", m as "ms" | "♪")}
               disabled={!fx.delayEnabled || masterBypassed}
               tooltip={<>
                 Delay time, 0–2000 ms.  Toggle <strong>ms ⇄ ♪</strong> to lock the delay to the detected BPM (e.g. 1/8 = eighth-note delay at the current tempo).  In note mode the value re-syncs whenever the BPM override or auto-detection changes.
@@ -1789,40 +1900,24 @@ function FxBody() {
         </div>
       </div>
 
-      {/* ── ACTION ROW: burn FX, status, revert, reset.  Sits in
-          normal padding (no negative margins) so it reads as part of
-          the rack chassis rather than another panel. */}
+      {/* ── ACTION ROW: reset + revert-to-dry on the LEFT, burn FX +
+          status pinned to the RIGHT via ml-auto.  Layout mirrors
+          OUTPUT (slurmify) and VIDEO (render) — primary action sits
+          flush right, secondary/cleanup controls on the left, so the
+          eye lands on the same column across all three rack modules.
+          Sits in normal padding (no negative margins) so it reads as
+          part of the rack chassis rather than another panel. */}
       <div className="flex flex-col gap-2 px-3 py-3">
         <div className="flex items-center gap-3">
-          <Tip
-            text={
-              isBurning
-                ? "A burn-FX job is already running.  Wait for it to finish."
-                : burnTarget
-                  ? <>Bake the current FX into a NEW audio file from the {burnTarget}.  <strong>Note:</strong> tremolo, reverb, dist gain/shape/tone, and ring-sweep are LIVE-PREVIEW ONLY for now — the backend burn applies the original four effects (drive / ring / delay / phaser).  Live FX still applies on top of the burned file.</>
-                  : "Drop a file or run slurmify first."
-            }
-          >
-            <Button
-              size="default"
-              variant="default"
-              disabled={isBurning || !burnTarget}
-              onClick={() => void burnRun()}
-              className="min-w-[120px]"
-            >
-              {isBurning ? (<><Loader2 className="animate-spin" />burning…</>) : (<><Flame />burn FX</>)}
+          {/* LEFT — secondary controls (reset, revert-to-dry).  Reset
+              is always visible; revert-to-dry only appears once a
+              burn exists (so the user has something to revert FROM). */}
+          <Tip text="Set every FX knob back to defaults. Live preview becomes effective bypass. Doesn't affect any already-burned file.">
+            <Button size="sm" variant="ghost" className="text-slurm-muted hover:text-slurm-fg" onClick={resetFx}>
+              <RotateCcw className="!h-3 !w-3" />
+              reset
             </Button>
           </Tip>
-
-          {isBurning && (
-            <span className="text-[11px] tabular-nums text-slurm-muted">
-              {burnDesc || "starting…"}
-            </span>
-          )}
-
-          {burnError && !isBurning && (
-            <span className="text-[11px] text-slurm-danger">{burnError}</span>
-          )}
 
           {burnedId && !isBurning && (
             <Tip text="Drop the burned-FX file and play the dry slurm output again. Knob settings stay; only the bake is reverted.">
@@ -1832,12 +1927,43 @@ function FxBody() {
             </Tip>
           )}
 
-          <Tip text="Set every FX knob back to defaults. Live preview becomes effective bypass. Doesn't affect any already-burned file.">
-            <Button size="sm" variant="ghost" className="ml-auto text-slurm-muted hover:text-slurm-fg" onClick={resetFx}>
-              <RotateCcw className="!h-3 !w-3" />
-              reset
-            </Button>
-          </Tip>
+          {/* RIGHT — primary "burn FX" action + inline progress/error.
+              ml-auto pushes the whole group flush against the panel's
+              right edge, matching the slurmify (OUTPUT) and render
+              (VIDEO) buttons' position so the user has a consistent
+              "primary action lives on the right" mental model across
+              all three modules. */}
+          <div className="ml-auto flex items-center gap-3">
+            {isBurning && (
+              <span className="text-[11px] tabular-nums text-slurm-muted">
+                {burnDesc || "starting…"}
+              </span>
+            )}
+
+            {burnError && !isBurning && (
+              <span className="text-[11px] text-slurm-danger">{burnError}</span>
+            )}
+
+            <Tip
+              text={
+                isBurning
+                  ? "A burn-FX job is already running.  Wait for it to finish."
+                  : burnTarget
+                    ? <>Bake the current FX into a NEW audio file from the {burnTarget}.  <strong>Note:</strong> tremolo, reverb, dist gain/shape/tone, and ring-sweep are LIVE-PREVIEW ONLY for now — the backend burn applies the original four effects (drive / ring / delay / phaser).  Live FX still applies on top of the burned file.</>
+                    : "Drop a file or run slurmify first."
+              }
+            >
+              <Button
+                size="default"
+                variant="default"
+                disabled={isBurning || !burnTarget}
+                onClick={() => void burnRun()}
+                className="min-w-[120px]"
+              >
+                {isBurning ? (<><Loader2 className="animate-spin" />burning…</>) : (<><Flame />burn FX</>)}
+              </Button>
+            </Tip>
+          </div>
         </div>
 
         {isBurning && (<Progress value={Math.round(burnProg * 100)} />)}
@@ -2049,11 +2175,21 @@ function FxShapeSelector({
     { value: "fold", label: "fold", desc: "Wavefolder — sin(k·x) wraps around as drive increases." },
     { value: "fuzz", label: "fuzz", desc: "Asymmetric half-rectified — transistor fuzz feel." },
   ]
+  // Layout: current-value LCD readout on TOP, button column in the
+  // MIDDLE, "shape" panel label on the BOTTOM.  Putting the value
+  // at the top lets the user see "what is this set to" at a glance
+  // before hunting through the four small buttons; the label at the
+  // bottom reads as a name-plate, matching the look-and-feel of a
+  // hardware module.  (Previous order was buttons → label → value,
+  // which left the label sandwiched between two visually noisy
+  // elements and made the panel-label's 0.18em letter-spacing read
+  // as broken stretching.)
   return (
     <div className={cn(
       "flex w-[76px] shrink-0 flex-col items-center gap-1 select-none",
       disabled && "opacity-50",
     )}>
+      <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
       <div className="flex h-14 flex-col gap-0.5 items-stretch w-full px-1">
         {shapes.map((s) => {
           const active = value === s.value
@@ -2078,7 +2214,6 @@ function FxShapeSelector({
         })}
       </div>
       <div className="panel-label text-[10px] text-slurm-muted">shape</div>
-      <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
     </div>
   )
 }
@@ -2101,11 +2236,15 @@ function FxWaveSelector({
     { value: "square", label: "sqr", desc: "On/off step toggle — chops between low and high." },
     { value: "noise",  label: "nse", desc: "Random wandering — band-limited noise modulation." },
   ]
+  // Same value-on-top → buttons → label-on-bottom order as
+  // FxShapeSelector — see that comment for the reasoning.  Keeps the
+  // two selectors visually consistent across the FX rack.
   return (
     <div className={cn(
       "flex w-[76px] shrink-0 flex-col items-center gap-1 select-none",
       disabled && "opacity-50",
     )}>
+      <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
       <div className="flex h-14 flex-col gap-0.5 items-stretch w-full px-1">
         {waves.map((w) => {
           const active = value === w.value
@@ -2130,7 +2269,6 @@ function FxWaveSelector({
         })}
       </div>
       <div className="panel-label text-[10px] text-slurm-muted">wave</div>
-      <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
     </div>
   )
 }
@@ -2187,17 +2325,10 @@ function VideoBody() {
     message?: string
   } | null>(null)
 
-  // Tell the user what audio source the next render will use.  When
-  // there's no slurm output yet, we auto-slurm first — surface that
-  // in the label so the user knows clicking render will trigger TWO
-  // jobs in sequence rather than rendering the raw upload.
-  const renderSourceLabel = burnedFileId
-    ? "FX-burned output"
-    : slurmOutput
-      ? "slurm output"
-      : sourceFile
-        ? "auto-slurm + render"
-        : null
+  // (The old `renderSourceLabel` derivation lived here before the
+  //  audio-source picker landed — superseded by `effectiveSourceLabel`
+  //  below, which respects the user's explicit clean / FX-burned /
+  //  auto choice.)
 
   // Render-button click handler.  Two paths:
   //   (a) audio already exists (slurm output or burned FX) → render
@@ -2250,131 +2381,210 @@ function VideoBody() {
     }
   }
 
+  // Effective audio-source label for tooltip/inline status — what
+  // /render-video will actually use given the user's audioSource pick
+  // and what files exist.  Mirrors the resolution logic inside
+  // useRenderVideoJob.run so the UI doesn't lie to the user.
+  //
+  // Default is "fx-burned" (W5b: FX-on-by-default for YouTube
+  // renders) — the legacy "auto" value still rolls through this
+  // branch as an alias.  When fx-burned is the chosen mode and no
+  // burn exists yet, useRenderVideoJob auto-runs /burn-fx FIRST
+  // before /render-video, so the UI label reflects that intent
+  // ("FX-burned output (will auto-burn)") instead of suggesting
+  // the render is blocked.
+  const audioSource = meta.audioSource ?? "fx-burned"
+  const includeFx = audioSource !== "slurm"   // legacy "auto" treated as include-FX
+  const effectiveSourceLabel: string | null = (() => {
+    if (audioSource === "slurm") {
+      return slurmOutput ? "slurm output (dry)" : sourceFile ? "auto-slurm + render (dry)" : null
+    }
+    // fx-burned (default) or legacy "auto"
+    if (burnedFileId) return "FX-burned output"
+    if (slurmOutput || sourceFile) return "FX-burned output (will auto-burn)"
+    return null
+  })()
+
   return (
     <div className="flex flex-col gap-2">
-      {/* Title — used in the MP4 metadata + safe-title filename slug */}
-      <LabeledTextbox
-        label="title"
-        value={meta.title}
-        onChange={(v) => setMetadata("title", v)}
-        type="text"
-        placeholder="my slurm"
-        inputWidth="20rem"
-        disabled={isRendering}
-        tooltip={
-          <>
-            Free-form video title. Embedded into the MP4 metadata atom
-            (visible in YouTube "Show More" + most media players) and
-            used to build the safe-title slug in the filename.
-            Max 40 characters of [a-z0-9_] survive the slug pass.
-            Leave blank → backend generates "Subvoyant Slurm
-            &lt;jumble&gt;" automatically.
-          </>
-        }
-      />
-
-      {/* Creator — embedded as MP4 "artist" atom */}
-      <LabeledTextbox
-        label="creator"
-        value={meta.creator}
-        onChange={(v) => setMetadata("creator", v)}
-        type="text"
-        placeholder="Subvoyant SIENA Slurmer"
-        inputWidth="20rem"
-        disabled={isRendering}
-        tooltip={
-          <>
-            Artist name shown in YouTube + media-player UIs. Embedded
-            into the MP4's <code>artist</code> metadata atom. Leave
-            blank → defaults to "Subvoyant SIENA Slurmer".
-          </>
-        }
-      />
-
-      {/* Include-source toggle — affects PATCH JSON only */}
-      <LabeledSwitch
-        label="include source"
-        checked={meta.includeSourceFilename}
-        onCheckedChange={(v) => setMetadata("includeSourceFilename", v)}
-        disabled={isRendering}
-        tooltip={
-          <>
-            Embed the ORIGINAL INPUT FILENAME inside the MP4's
-            self-describing PATCH JSON blob (ADR-0008). Useful for
-            reproducibility — a future "import patch" feature could
-            pair the params with their source. Off by default because
-            some users prefer not to leak source-file names in
-            uploads.
-          </>
-        }
-      />
-
-      {/* Action row — Render button + status.  When the user has no
-          slurm output yet, the button label flips to "slurm + render"
-          and the click handler chains the two jobs.  Disabled while
-          either slurm OR video is in flight. */}
-      <div className="flex items-center gap-3 mt-1">
-        <Tip
-          text={
-            isRendering
-              ? "A render is in progress. Wait for it to finish before queueing another."
-              : isSlurming
-                ? "An auto-slurm is running first; the render kicks in as soon as it finishes."
-                : !renderSourceLabel
-                  ? "Drop a file first — render-video needs an audio source."
-                  : burnedFileId
-                    ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>FX-burned output</strong> as the audio track. Stream-copied video + AAC audio = renders in seconds.</>
-                    : slurmOutput
-                      ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>slurm output</strong> as the audio track. Stream-copied video + AAC audio = renders in seconds.</>
-                      : <>No slurm output yet — clicking will <strong>slurmify with the current settings first</strong>, then render the video.  Two jobs in sequence; OUTPUT module shows slurm progress, then this module shows render progress.</>
+      {/* Top action bar — title + creator + include-source toggle +
+          audio-source select on the LEFT, render button + status on
+          the RIGHT.  Same layout philosophy as OutputBody: collapse a
+          stack of form rows into a single header line so the rack
+          stays short and the visual flow tracks left → right →
+          (button) → preview-below.  flex-wrap lets the trailing
+          controls drop to a second line on narrow viewports rather
+          than overflow. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* Title — used in the MP4 metadata + safe-title filename slug.
+            Shrunk to 11rem (was 14) so the whole row fits on a single
+            horizontal line — anything truly long can still be typed,
+            it just scrolls within the input. */}
+        <LabeledTextbox
+          label="title"
+          value={meta.title}
+          onChange={(v) => setMetadata("title", v)}
+          type="text"
+          placeholder="my slurm"
+          inputWidth="11rem"
+          disabled={isRendering}
+          compactLabel
+          tooltip={
+            <>
+              Free-form video title. Embedded into the MP4 metadata atom
+              (visible in YouTube "Show More" + most media players) and
+              used to build the safe-title slug in the filename.
+              Max 40 characters of [a-z0-9_] survive the slug pass.
+              Leave blank → backend generates "Subvoyant Slurm
+              &lt;jumble&gt;" automatically.
+            </>
           }
-        >
-          <Button
-            size="default"
-            variant="default"
-            disabled={isRendering || isSlurming || !renderSourceLabel}
-            onClick={() => void handleRender()}
-            className="min-w-[180px]"
+        />
+
+        {/* Creator — embedded as MP4 "artist" atom */}
+        <LabeledTextbox
+          label="creator"
+          value={meta.creator}
+          onChange={(v) => setMetadata("creator", v)}
+          type="text"
+          placeholder="Subvoyant SIENA Slurmer"
+          inputWidth="11rem"
+          disabled={isRendering}
+          compactLabel
+          tooltip={
+            <>
+              Artist name shown in YouTube + media-player UIs. Embedded
+              into the MP4's <code>artist</code> metadata atom. Leave
+              blank → defaults to "Subvoyant SIENA Slurmer".
+            </>
+          }
+        />
+
+        {/* Audio source — short option labels.  The two-option model
+            lands the W5b FX-on-by-default UX change: FX-burned is the
+            default; "clean slurm (dry)" is the explicit opt-out.
+            (The legacy "auto" value was the old default and still
+            survives in persisted state from v0.2.0.0; useRenderVideoJob
+            treats it as an alias for "fx-burned".  Not exposed as a
+            picker option to avoid confusion — anyone who had "auto"
+            persisted gets the new default behavior automatically.)
+            See useRenderVideoJob.run for the matching resolution
+            logic, and videoStore.ts for the field-level history. */}
+        <LabeledSelect
+          label="audio"
+          value={meta.audioSource === "auto" ? "fx-burned" : meta.audioSource}
+          onValueChange={(v) => setMetadata("audioSource", v as "auto" | "slurm" | "fx-burned")}
+          options={[
+            { value: "fx-burned", label: "FX-burned (default)" },
+            { value: "slurm",     label: "clean slurm (dry)" },
+          ]}
+          triggerWidth="11rem"
+          disabled={isRendering}
+          compactLabel
+          tooltip={
+            <>
+              Which audio track gets encoded into the MP4.{" "}
+              <strong>FX-burned (default)</strong> = bake the FX chain
+              into the rendered audio. If you've already clicked
+              "burn FX" the existing burn is reused; otherwise the
+              render auto-runs burn-fx first using the current FX
+              knob settings, then encodes the result.{" "}
+              <strong>clean slurm (dry)</strong> = explicit opt-out —
+              encode the dry slurm output, ignoring any FX dialed up
+              in the FX module. Useful when you want a clean reference
+              cut alongside an effected one.
+            </>
+          }
+        />
+
+        {/* Include-source toggle — affects PATCH JSON only.
+            compactLabel so the switch reads as anchored to its label
+            (recovers ~90 px of horizontal slack vs the default
+            128 px label slot — the difference between fitting on
+            one line and wrapping the render button). */}
+        <LabeledSwitch
+          label="include src"
+          checked={meta.includeSourceFilename}
+          onCheckedChange={(v) => setMetadata("includeSourceFilename", v)}
+          disabled={isRendering}
+          compactLabel
+          tooltip={
+            <>
+              Embed the ORIGINAL INPUT FILENAME inside the MP4's
+              self-describing PATCH JSON blob (ADR-0008). Useful for
+              reproducibility — a future "import patch" feature could
+              pair the params with their source. Off by default because
+              some users prefer not to leak source-file names in
+              uploads.
+            </>
+          }
+        />
+
+        {/* Render button + status — pinned to the right via ml-auto
+            so it always sits flush with the panel edge regardless of
+            how wide the metadata controls render.  When the user has
+            no slurm output yet AND audio source is "auto" or
+            "slurm", the button label flips to "slurm + render" and
+            the click handler chains the two jobs. */}
+        <div className="ml-auto flex items-center gap-3">
+          <Tip
+            text={
+              isRendering
+                ? "A render is in progress. Wait for it to finish before queueing another."
+                : isSlurming
+                  ? "An auto-slurm is running first; the render kicks in as soon as it finishes."
+                  : !effectiveSourceLabel
+                    ? "Drop a file first — render-video needs an audio source."
+                    : !includeFx && slurmOutput
+                      ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>clean slurm output</strong> (no FX) as the audio track.</>
+                      : burnedFileId
+                        ? <>Render a 1920×1080 MP4 with the looping slurmify animation + your <strong>FX-burned output</strong> as the audio track. Stream-copied video + AAC audio = renders in seconds.</>
+                        : slurmOutput || sourceFile
+                          ? <>FX are <strong>on by default</strong>: clicking will burn the current FX chain into the audio first, then render the MP4 with the burned result.  Pick "clean slurm (dry)" in the audio selector to opt out.</>
+                          : <>No audio source yet — clicking will <strong>slurmify with the current settings first</strong>, then bake FX, then render the video.</>
+            }
           >
-            {isSlurming ? (
-              <>
-                <Loader2 className="animate-spin" />
-                slurming first…
-              </>
-            ) : isRendering ? (
-              <>
-                <Loader2 className="animate-spin" />
-                rendering…
-              </>
-            ) : !slurmOutput && !burnedFileId && sourceFile ? (
-              <>
-                <Film />
-                slurm + render MP4
-              </>
-            ) : (
-              <>
-                <Film />
-                render YouTube MP4
-              </>
-            )}
-          </Button>
-        </Tip>
+            <Button
+              size="default"
+              variant="default"
+              disabled={isRendering || isSlurming || !effectiveSourceLabel}
+              onClick={() => void handleRender()}
+              className="min-w-[180px]"
+            >
+              {isSlurming ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  slurming first…
+                </>
+              ) : isRendering ? (
+                <>
+                  <Loader2 className="animate-spin" />
+                  rendering…
+                </>
+              ) : !slurmOutput && !burnedFileId && sourceFile && !includeFx ? (
+                <>
+                  <Film />
+                  slurm + render MP4
+                </>
+              ) : (
+                <>
+                  <Film />
+                  render YouTube MP4
+                </>
+              )}
+            </Button>
+          </Tip>
 
-        {!isRendering && !isSlurming && renderSourceLabel && (
-          <span className="text-[10px] text-slurm-muted italic">
-            audio source: {renderSourceLabel}
-          </span>
-        )}
+          {isRendering && (
+            <span className="text-[11px] tabular-nums text-slurm-muted">
+              {renderDesc || "starting…"}
+            </span>
+          )}
 
-        {isRendering && (
-          <span className="text-[11px] tabular-nums text-slurm-muted">
-            {renderDesc || "starting…"}
-          </span>
-        )}
-
-        {renderError && !isRendering && (
-          <span className="text-[11px] text-slurm-danger">{renderError}</span>
-        )}
+          {renderError && !isRendering && (
+            <span className="text-[11px] text-slurm-danger">{renderError}</span>
+          )}
+        </div>
       </div>
 
       {/* Progress bar — only visible while rendering */}

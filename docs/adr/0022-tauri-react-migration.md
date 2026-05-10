@@ -1,8 +1,8 @@
 # ADR-0022: Tauri + React migration plan
 
-- **Status:** Proposed
+- **Status:** Accepted (shipped in v0.2.0; commits 96cb27c + d677f9d on `main`)
 - **Date:** 2026-05
-- **Version:** 0.2.0 (target)
+- **Version:** 0.2.0
 - **Supersedes:** UI_DEVELOPMENT_PLAN.md §4–§5 (those sections become historical
   once this ADR is accepted; the Phase 5/6 Gradio polish work is dropped in
   favour of a clean cut to the new architecture)

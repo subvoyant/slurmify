@@ -21,7 +21,7 @@
 
 [project]
 name = "slurmify-backend"
-version = "0.2.0"
+version = "0.2.1"
 description = "Subvoyant SIENA Slurmer FastAPI backend (Tauri sidecar)"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
@@ -54,6 +54,10 @@ dev = [
   "httpx>=0.27",        # for testing the API via real HTTP requests
   "pytest>=8",
   "pytest-asyncio>=0.23",
+  # PyInstaller — only needed at build time to compile the standalone
+  # sidecar binary that gets bundled into the .app.  See
+  # src-python/slurmify-backend.spec and scripts/build-sidecar.sh.
+  "pyinstaller>=6.10",
 ]
 
 # Setuptools wants this to know what to install.  The sidecar isn't a

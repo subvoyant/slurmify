@@ -53,6 +53,7 @@
 import * as React from "react"
 import { createPortal } from "react-dom"
 import { cn } from "@/lib/utils"
+import { useUiPrefsStore } from "@/stores/uiPrefsStore"
 
 export type EggAnchor = "spring-up" | "slide-in-right" | "peek-up-behind"
 
@@ -260,6 +261,15 @@ export function EasterEggHover({
   className,
   alt = "",
 }: EasterEggHoverProps) {
+  // Global easter-egg-suppression toggle (UtilityBar's "eggs" button).
+  // Read up-front so it joins the regular React-Hooks call order, then
+  // bail out AFTER all hooks below have run — short-circuiting before
+  // useState/useEffect would violate Rules of Hooks on a re-render
+  // when the toggle flips.  The runtime cost of the unused hooks is
+  // negligible (zustand subscription + two useState slots + an effect
+  // gated on isHovering, which is false when the egg is "disabled").
+  const easterEggsEnabled = useUiPrefsStore((s) => s.easterEggsEnabled)
+
   const [isHovering, setIsHovering] = React.useState(false)
   const wrapperRef = React.useRef<HTMLSpanElement>(null)
   const a = ANCHOR_STYLES[anchor]
@@ -291,6 +301,16 @@ export function EasterEggHover({
       setCoords(computeFixedCoords(anchor, triggerRect, alignRect, width, height, offsetY, alignXSide))
     }
   }, [isHovering, usePortal, alignToSelector, alignXSide, anchor, width, height, offsetY])
+
+  // ── Easter-eggs toggle short-circuit ─────────────────────────────
+  // After all hooks are wired, bail out if the user has eggs off —
+  // render the child unwrapped so the underlying button/chip still
+  // works exactly as before, just without the gif overlay.  Placed
+  // here (not at the top of the function) to satisfy Rules of Hooks
+  // even when the toggle flips mid-session.
+  if (!easterEggsEnabled) {
+    return <>{children}</>
+  }
 
   // ── Build the gif's style, branching on portal vs absolute mode ──
 

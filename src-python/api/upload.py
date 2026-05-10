@@ -167,50 +167,108 @@ async def upload(file: UploadFile = File(...)):
     Errors
     ──────
     400  if ffmpeg extraction fails on a video file.
+
+    Diagnostics
+    ───────────
+    Every entry, success, and failure is printed to stdout with a
+    `[slurm-api/upload]` prefix.  In a bundled DMG those lines surface
+    in `Console.app` under the `slurmify-backend` process — the
+    fastest way to triage when the React DropZone reports a failure
+    without enough detail (the original v0.2.0 build did exactly that;
+    see the "two stacked 'upload failed' lines" incident, May 2026).
+    Keep these prints — they cost effectively nothing and they're the
+    first thing future-us reaches for when an upload regresses.
     """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="upload missing filename")
+    print(
+        f"[slurm-api/upload] received: name={file.filename!r} "
+        f"content_type={file.content_type!r}",
+        flush=True,
+    )
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="upload missing filename")
 
-    original_name = file.filename
-    ext = Path(original_name).suffix.lower()
+        original_name = file.filename
+        ext = Path(original_name).suffix.lower()
 
-    # Step 1 — write the upload to a session-temp file.  We use the
-    # original extension so slurmio routing (which checks ext) works.
-    saved_path = slurmio._new_temp_path(suffix=ext or ".bin", prefix="upload_")
-    with open(saved_path, "wb") as out:
-        # FastAPI streams the upload; copy in chunks to avoid loading
-        # multi-GB files into memory.
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            out.write(chunk)
+        # Step 1 — write the upload to a session-temp file.  We use the
+        # original extension so slurmio routing (which checks ext) works.
+        saved_path = slurmio._new_temp_path(suffix=ext or ".bin", prefix="upload_")
+        bytes_written = 0
+        with open(saved_path, "wb") as out:
+            # FastAPI streams the upload; copy in chunks to avoid loading
+            # multi-GB files into memory.
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                bytes_written += len(chunk)
+        print(
+            f"[slurm-api/upload] streamed {bytes_written} bytes to {saved_path}",
+            flush=True,
+        )
 
-    # Step 2 / 3 — route by extension.
-    was_extracted = False
-    if ext in _AUDIO_EXTS:
-        registered_path = saved_path
-    else:
-        # Anything not in _AUDIO_EXTS is treated as video / container.
-        # _ffmpeg_extract_audio raises HTTPException 400 on failure.
-        registered_path = _ffmpeg_extract_audio(saved_path)
-        was_extracted = True
-        # Best-effort: delete the original upload so we don't double-store.
-        # If the unlink fails (rare; permissions), the session cleanup
-        # will sweep it up at exit.
-        try:
-            os.unlink(saved_path)
-        except OSError:
-            pass
+        # Step 2 / 3 — route by extension.
+        was_extracted = False
+        if ext in _AUDIO_EXTS:
+            registered_path = saved_path
+        else:
+            # Anything not in _AUDIO_EXTS is treated as video / container.
+            # _ffmpeg_extract_audio raises HTTPException 400 on failure.
+            print(
+                f"[slurm-api/upload] ext {ext!r} not in audio whitelist — "
+                "running ffmpeg -vn",
+                flush=True,
+            )
+            registered_path = _ffmpeg_extract_audio(saved_path)
+            was_extracted = True
+            # Best-effort: delete the original upload so we don't double-store.
+            # If the unlink fails (rare; permissions), the session cleanup
+            # will sweep it up at exit.
+            try:
+                os.unlink(saved_path)
+            except OSError:
+                pass
 
-    # Step 4 — probe metadata for the frontend.
-    meta = _probe_audio_metadata(registered_path)
+        # Step 4 — probe metadata for the frontend.
+        meta = _probe_audio_metadata(registered_path)
 
-    # Step 5 — register and return.
-    file_id = register_file(registered_path)
-    return {
-        "file_id":       file_id,
-        "name":          original_name,
-        "was_extracted": was_extracted,
-        **meta,
-    }
+        # Step 5 — register and return.
+        file_id = register_file(registered_path)
+        print(
+            f"[slurm-api/upload] OK file_id={file_id} "
+            f"duration={meta.get('duration_sec'):.2f}s "
+            f"channels={meta.get('channels')} "
+            f"sr={meta.get('sample_rate')} extracted={was_extracted}",
+            flush=True,
+        )
+        return {
+            "file_id":       file_id,
+            "name":          original_name,
+            "was_extracted": was_extracted,
+            **meta,
+        }
+    except HTTPException:
+        # Already a clean 4xx — let FastAPI surface it.  Re-log for the
+        # console trail, then re-raise so the response is unchanged.
+        raise
+    except Exception as e:
+        # Anything else is a programming bug we want the operator to see.
+        # FastAPI's default exception handler turns this into a 500 with
+        # an empty body, which is exactly the failure mode that produced
+        # the "two stacked 'upload failed' lines" UI mystery.  Print the
+        # full traceback so the sidecar log has it, then re-raise as an
+        # HTTPException with the message in the body so the React side
+        # can display it.
+        import traceback
+        print(
+            f"[slurm-api/upload] UNHANDLED {type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc(file=sys.stderr)
+        raise HTTPException(
+            status_code=500,
+            detail=f"upload handler crashed: {type(e).__name__}: {e}",
+        )

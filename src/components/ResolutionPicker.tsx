@@ -23,7 +23,6 @@
 // here — the parent owns both fields and applies the rule on change.
 // ──────────────────────────────────────────────────────────────────────
 
-import * as React from "react"
 import { Tip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { EasterEggHover } from "@/components/EasterEggHover"

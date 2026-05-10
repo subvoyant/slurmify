@@ -20,7 +20,7 @@
 // ──────────────────────────────────────────────────────────────────────
 
 import { useCallback, useRef } from "react"
-import { useSlurmStore, type SlurmParams } from "@/stores/slurmStore"
+import { useSlurmStore, type SlurmParams, type SlurmOutput } from "@/stores/slurmStore"
 import { getBackendUrl } from "@/lib/api"
 
 /**
@@ -74,9 +74,11 @@ function buildRequestBody(fileId: string, params: SlurmParams): Record<string, u
 
 interface SlurmifyJobApi {
   /** Kick off a new slurmify run.  Aborts any in-flight job first.
-   *  Resolves when the job completes (success OR error) — useful for
-   *  scripted flows; the store carries everything UI needs. */
-  run: () => Promise<void>
+   *  Resolves with the SlurmOutput on success, or null on error /
+   *  cancellation (the store also carries everything UI needs;
+   *  the return value is for callers that need to chain a follow-up
+   *  action — e.g. VideoBody auto-slurms then renders). */
+  run: () => Promise<SlurmOutput | null>
   /** Abort the in-flight job (closes SSE, clears store running state). */
   cancel: () => void
 }
@@ -99,14 +101,30 @@ export function useSlurmifyJob(): SlurmifyJobApi {
     }
   }, [])
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (): Promise<SlurmOutput | null> => {
     // Pull latest store snapshot (NOT the values captured at hook
     // mount).  Zustand's getState() is the escape hatch for this.
-    const { sourceFile, params } = useSlurmStore.getState()
+    const { sourceFile, params, setParam } = useSlurmStore.getState()
     if (!sourceFile) {
       finishJob(null, "no source file loaded")
-      return
+      return null
     }
+
+    // ── Pre-roll seed if unset ──────────────────────────────────────
+    // The user-facing contract is "the seed field always shows the
+    // seed that will be / was used."  When seed is null we generate
+    // one on the FRONTEND right before submit, persist it into the
+    // store, and forward the now-concrete value to the backend.  After
+    // a slurmify run the user can read the field, copy the seed, and
+    // reproduce the exact result later.  Math.random()'s 53-bit space
+    // far exceeds the 6-digit display range — Math.floor(... * 1e6)
+    // gives us 0..999_999, plenty of variety while staying readable.
+    let seedToUse = params.seed
+    if (seedToUse === null || seedToUse === undefined) {
+      seedToUse = Math.floor(Math.random() * 1_000_000)
+      setParam("seed", seedToUse)
+    }
+    const effectiveParams = { ...params, seed: seedToUse }
 
     // Abort any previous in-flight job before starting a new one.
     cancel()
@@ -118,7 +136,7 @@ export function useSlurmifyJob(): SlurmifyJobApi {
       const res = await fetch(`${baseUrl}/slurmify`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(buildRequestBody(sourceFile.file_id, params)),
+        body:    JSON.stringify(buildRequestBody(sourceFile.file_id, effectiveParams)),
       })
       if (!res.ok) {
         const body = await res.text().catch(() => "")
@@ -128,57 +146,71 @@ export function useSlurmifyJob(): SlurmifyJobApi {
       startJob(job_id)
 
       // ── Step 2: Subscribe to SSE progress stream ────────────────
-      const es = new EventSource(`${baseUrl}/jobs/${job_id}/progress`)
-      eventSourceRef.current = es
+      // Wrap the SSE lifecycle in a Promise so the caller can `await
+      // run()` and chain a follow-up action when slurmify finishes
+      // (e.g. VideoBody's auto-slurm-then-render flow).  The Deferred
+      // pattern: create a Promise whose resolve is captured, then
+      // call resolve() from inside the SSE handlers.
+      return await new Promise<SlurmOutput | null>((resolve) => {
+        const es = new EventSource(`${baseUrl}/jobs/${job_id}/progress`)
+        eventSourceRef.current = es
 
-      // SSE messages each carry the full Job snapshot from the
-      // backend (see jobs.py to_dict()).  We update the store on
-      // every message; the UI re-renders the progress bar.
-      es.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data) as {
-            id:        string
-            progress:  number
-            desc:      string
-            done:      boolean
-            output_id: string | null
-            error:     string | null
-          }
-          updateJob({ progress: payload.progress, desc: payload.desc })
-          if (payload.done) {
+        // SSE messages each carry the full Job snapshot from the
+        // backend (see jobs.py to_dict()).  We update the store on
+        // every message; the UI re-renders the progress bar.
+        es.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data) as {
+              id:        string
+              progress:  number
+              desc:      string
+              done:      boolean
+              output_id: string | null
+              error:     string | null
+            }
+            updateJob({ progress: payload.progress, desc: payload.desc })
+            if (payload.done) {
+              es.close()
+              eventSourceRef.current = null
+              if (payload.error) {
+                finishJob(null, payload.error)
+                resolve(null)
+              } else if (payload.output_id) {
+                const url = `${baseUrl}/files/${payload.output_id}`
+                const output: SlurmOutput = { output_id: payload.output_id, url }
+                setOutput(output)
+                finishJob(output, null)
+                resolve(output)
+              } else {
+                finishJob(null, "job finished without an output_id")
+                resolve(null)
+              }
+            }
+          } catch (e) {
+            // Malformed SSE payload — surface as an error and close.
             es.close()
             eventSourceRef.current = null
-            if (payload.error) {
-              finishJob(null, payload.error)
-            } else if (payload.output_id) {
-              const url = `${baseUrl}/files/${payload.output_id}`
-              setOutput({ output_id: payload.output_id, url })
-              finishJob({ output_id: payload.output_id, url }, null)
-            } else {
-              finishJob(null, "job finished without an output_id")
-            }
+            finishJob(null, `bad SSE payload: ${(e as Error).message}`)
+            resolve(null)
           }
-        } catch (e) {
-          // Malformed SSE payload — surface as an error and close.
-          es.close()
-          eventSourceRef.current = null
-          finishJob(null, `bad SSE payload: ${(e as Error).message}`)
         }
-      }
 
-      // SSE error fires when the connection is closed unexpectedly
-      // (backend died, network blip, etc.).  Treat as a job failure
-      // unless we already received the `done: true` payload (in
-      // which case eventSourceRef has been nulled and we ignore).
-      es.onerror = () => {
-        if (eventSourceRef.current === es) {
-          es.close()
-          eventSourceRef.current = null
-          finishJob(null, "SSE connection lost")
+        // SSE error fires when the connection is closed unexpectedly
+        // (backend died, network blip, etc.).  Treat as a job failure
+        // unless we already received the `done: true` payload (in
+        // which case eventSourceRef has been nulled and we ignore).
+        es.onerror = () => {
+          if (eventSourceRef.current === es) {
+            es.close()
+            eventSourceRef.current = null
+            finishJob(null, "SSE connection lost")
+            resolve(null)
+          }
         }
-      }
+      })
     } catch (e) {
       finishJob(null, (e as Error).message ?? "unknown error")
+      return null
     }
   }, [cancel, startJob, updateJob, finishJob, setOutput])
 

@@ -43,7 +43,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tip } from "@/components/ui/tooltip"
-import { cn } from "@/lib/utils"
 
 import {
   FACTORY_PRESETS,
@@ -158,15 +157,15 @@ export function PresetBar() {
   // keys, so this matches save order without an explicit array.
   const userPresetNames = Object.keys(userPresets)
 
+  // Outer wrapper is intentionally NAKED — no border/bg/rounded.  The
+  // bar styling lives one level up in <TopBar>, which composes us
+  // with <UtilityBar> into a single sticky bar (per the W5b "merge
+  // preset row + utility bar into one sticky bar" UX change).  If
+  // you ever need PresetBar standalone again, wrap it in a
+  // border + bg container at the call site rather than re-adding
+  // styling here.
   return (
-    <div
-      className={cn(
-        "flex items-center gap-2",
-        "rounded border border-slurm-border bg-slurm-surface",
-        "px-3 py-2",
-        "text-[11px]",
-      )}
-    >
+    <div className="flex items-center gap-2 text-[11px]">
       <Tip
         text={
           <>
@@ -344,3 +343,5 @@ export function PresetBar() {
     </div>
   )
 }
+
+

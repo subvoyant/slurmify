@@ -52,6 +52,14 @@ export interface LabeledSelectProps<V extends string = string> {
    *  dropdown only shows 4-letter codes, which fit in 7rem.  Future
    *  enum dropdowns with longer labels can override. */
   triggerWidth?: string
+
+  /** When true, the label is content-sized (instead of the default
+   *  fixed `w-32` 128 px) and sits with a tight `gap-2` against the
+   *  trigger.  Use for inline / horizontal layouts where the
+   *  default fixed-width label leaves an awkward gap that makes
+   *  the label and input look disconnected.  Default `false`
+   *  preserves the legacy stacked-row behavior. */
+  compactLabel?: boolean
 }
 
 export function LabeledSelect<V extends string = string>({
@@ -65,7 +73,15 @@ export function LabeledSelect<V extends string = string>({
   disabled,
   className,
   triggerWidth = "7rem",
+  compactLabel = false,
 }: LabeledSelectProps<V>) {
+  // Label size + row gap collapse together in compact mode so the
+  // label visually anchors to the input instead of floating in 128 px
+  // of empty space.
+  const labelClasses = compactLabel
+    ? "shrink-0 text-[12px] text-slurm-muted select-none"
+    : "w-32 shrink-0 text-[12px] text-slurm-muted select-none"
+  const rowGap = compactLabel ? "gap-2" : "gap-3"
   return (
     <div
       className={cn(
@@ -74,13 +90,12 @@ export function LabeledSelect<V extends string = string>({
         className,
       )}
     >
-      <div className="flex items-center gap-3">
+      <div className={cn("flex items-center", rowGap)}>
         {tooltip ? (
           <Tip text={tooltip}>
             <label
               className={cn(
-                "w-32 shrink-0 text-[12px] text-slurm-muted",
-                "select-none",
+                labelClasses,
                 "cursor-help underline decoration-dotted decoration-slurm-border-2 underline-offset-4",
               )}
             >
@@ -88,12 +103,7 @@ export function LabeledSelect<V extends string = string>({
             </label>
           </Tip>
         ) : (
-          <label
-            className={cn(
-              "w-32 shrink-0 text-[12px] text-slurm-muted",
-              "select-none",
-            )}
-          >
+          <label className={labelClasses}>
             {label}
           </label>
         )}
@@ -118,7 +128,13 @@ export function LabeledSelect<V extends string = string>({
         </Select>
       </div>
       {hint && (
-        <div className="ml-32 pl-3 text-[10px] text-slurm-muted">{hint}</div>
+        <div className={cn(
+          "text-[10px] text-slurm-muted",
+          // In compact mode the label is content-sized, so the
+          // ml-32 indent for the hint no longer applies — drop the
+          // indent so the hint sits directly under the row.
+          compactLabel ? "" : "ml-32 pl-3",
+        )}>{hint}</div>
       )}
     </div>
   )

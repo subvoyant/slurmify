@@ -111,6 +111,7 @@ const config: Config = {
       },
       fontFamily: {
         sans: [
+          "Share Tech Mono",
           "-apple-system",
           "BlinkMacSystemFont",
           "Segoe UI",
@@ -120,12 +121,36 @@ const config: Config = {
           "sans-serif",
         ],
         mono: [
+          "JetBrains Mono",
           "ui-monospace",
           "SFMono-Regular",
           "SF Mono",
           "Menlo",
           "Monaco",
           "Consolas",
+          "monospace",
+        ],
+        // ── Audio-gear-specific families ───────────────────────────
+        // panel  — etched silk-screen labels (rack module names,
+        //          knob labels, section dividers)
+        // lcd    — backlit LCD digits (knob values, textbox numerics)
+        // display — large brand wordmark (SIENA SLURMER header)
+        panel: [
+          "Major Mono Display",
+          "Share Tech Mono",
+          "ui-monospace",
+          "monospace",
+        ],
+        lcd: [
+          "VT323",
+          "JetBrains Mono",
+          "ui-monospace",
+          "monospace",
+        ],
+        display: [
+          "Major Mono Display",
+          "JetBrains Mono",
+          "ui-monospace",
           "monospace",
         ],
       },
@@ -148,10 +173,22 @@ const config: Config = {
           "0%":   { opacity: "0", transform: "translateY(4px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
         },
+        // Subtle LCD flicker — for value readouts when actively
+        // changing.  Kept very light (0.85→1) so it doesn't become
+        // distracting on a still display.  Only applied on hover or
+        // active state, not always-on.
+        "lcd-flicker": {
+          "0%, 100%": { opacity: "1" },
+          "47%":      { opacity: "0.92" },
+          "48%":      { opacity: "1" },
+          "92%":      { opacity: "0.95" },
+          "93%":      { opacity: "1" },
+        },
       },
       animation: {
-        "pulse-glow": "pulse-glow 2s ease-in-out infinite",
-        "fade-in":    "fade-in 220ms ease-out",
+        "pulse-glow":  "pulse-glow 2s ease-in-out infinite",
+        "fade-in":     "fade-in 220ms ease-out",
+        "lcd-flicker": "lcd-flicker 6s ease-in-out infinite",
       },
     },
   },

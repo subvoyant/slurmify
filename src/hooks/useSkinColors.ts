@@ -60,9 +60,15 @@ const VARIABLE_NAMES: Record<keyof SkinColors, string> = {
 function readSkinColors(): SkinColors {
   // Defensive default — runs in test envs where document is undefined.
   if (typeof document === "undefined") {
+    // The `as unknown as SkinColors` double-cast is intentional —
+    // tsc can't prove that Object.fromEntries() with string keys
+    // matches the SkinColors structural type (it doesn't enforce
+    // exact-key match), but at runtime we know we're producing
+    // exactly the right shape because we iterate VARIABLE_NAMES'
+    // keys (which is the source of truth for SkinColors fields).
     return Object.fromEntries(
       Object.keys(VARIABLE_NAMES).map((k) => [k, "#000000"]),
-    ) as SkinColors
+    ) as unknown as SkinColors
   }
   const styles = getComputedStyle(document.documentElement)
   const out = {} as SkinColors

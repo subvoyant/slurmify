@@ -32,6 +32,12 @@ export interface LabeledSwitchProps {
   tooltip?:        React.ReactNode
   disabled?:       boolean
   className?:      string
+  /** When true, the label is content-sized (instead of the default
+   *  fixed `w-32` 128 px) and sits with a tight `gap-2` against the
+   *  switch.  Same compaction prop as LabeledSelect / LabeledTextbox.
+   *  Use for inline / horizontal layouts where the default fixed
+   *  label width leaves an awkward gap. */
+  compactLabel?:   boolean
 }
 
 export function LabeledSwitch({
@@ -42,7 +48,15 @@ export function LabeledSwitch({
   tooltip,
   disabled,
   className,
+  compactLabel = false,
 }: LabeledSwitchProps) {
+  // Same compactLabel mechanism as LabeledSelect/LabeledTextbox —
+  // content-sized label + tighter gap so the switch reads as anchored
+  // to its label instead of floating in 128 px of empty space.
+  const labelClasses = compactLabel
+    ? "shrink-0 text-[12px] text-slurm-muted select-none cursor-pointer"
+    : "w-32 shrink-0 text-[12px] text-slurm-muted select-none cursor-pointer"
+  const rowGap = compactLabel ? "gap-2" : "gap-3"
   return (
     <div
       className={cn(
@@ -51,13 +65,12 @@ export function LabeledSwitch({
         className,
       )}
     >
-      <div className="flex items-center gap-3">
+      <div className={cn("flex items-center", rowGap)}>
         {tooltip ? (
           <Tip text={tooltip}>
             <label
               className={cn(
-                "w-32 shrink-0 text-[12px] text-slurm-muted",
-                "select-none cursor-pointer",
+                labelClasses,
                 "underline decoration-dotted decoration-slurm-border-2 underline-offset-4",
               )}
               onClick={() => !disabled && onCheckedChange(!checked)}
@@ -67,10 +80,7 @@ export function LabeledSwitch({
           </Tip>
         ) : (
           <label
-            className={cn(
-              "w-32 shrink-0 text-[12px] text-slurm-muted",
-              "select-none cursor-pointer",
-            )}
+            className={labelClasses}
             onClick={() => !disabled && onCheckedChange(!checked)}
           >
             {label}
@@ -93,7 +103,10 @@ export function LabeledSwitch({
         </span>
       </div>
       {hint && (
-        <div className="ml-32 pl-3 text-[10px] text-slurm-muted">{hint}</div>
+        <div className={cn(
+          "text-[10px] text-slurm-muted",
+          compactLabel ? "" : "ml-32 pl-3",
+        )}>{hint}</div>
       )}
     </div>
   )

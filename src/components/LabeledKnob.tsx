@@ -54,6 +54,30 @@ export interface LabeledKnobProps {
   /** Disabled state — greys out + ignores input. */
   disabled?: boolean
 
+  /** Optional custom value↔normalized mappers for log/exp knob
+   *  tapers.  See Knob's KnobProps for the full contract.  Use for
+   *  controls that span multiple decades (rate, frequency, time)
+   *  where you want fine resolution at low values. */
+  valueToNorm?: (v: number) => number
+  normToValue?: (n: number) => number
+
+  /** Optional graticule markers — tick + label pairs printed around
+   *  the knob's outer ring at the given values.  See Knob's
+   *  KnobProps for the full contract. */
+  markers?: Array<{ value: number; label?: string }>
+
+  /** When true (and `defaultValue` is provided), auto-renders a
+   *  distinguished tick at the default position.  Used on FX knobs
+   *  with a unity / passthrough state (gain at 0 dB, depth at 0,
+   *  etc.) so center is visually findable at a glance. */
+  showDefaultMark?: boolean
+
+  /** Flip the active-arc fill direction.  See Knob's KnobProps for
+   *  the contract — pair with an inverted valueToNorm so the lit
+   *  arc grows AS the value grows even when the indicator rotates
+   *  CCW with rising values (e.g., panner L knob). */
+  invertArc?: boolean
+
   className?: string
 }
 
@@ -70,6 +94,11 @@ export function LabeledKnob({
   size = 56,
   tooltip,
   disabled,
+  valueToNorm,
+  normToValue,
+  markers,
+  showDefaultMark,
+  invertArc,
   className,
 }: LabeledKnobProps) {
   const display = formatValue ? formatValue(value) : String(value)
@@ -99,10 +128,19 @@ export function LabeledKnob({
         disabled={disabled}
         ariaLabel={label}
         ariaValueText={ariaText}
+        valueToNorm={valueToNorm}
+        normToValue={normToValue}
+        markers={markers}
+        showDefaultMark={showDefaultMark}
+        invertArc={invertArc}
       />
       <div
         className={cn(
-          "text-[10px] uppercase tracking-[0.05em] text-slurm-muted",
+          // Major Mono Display silk-screen label — etched-into-aluminum
+          // treatment via .panel-label.  Slightly larger than the
+          // previous 10px because Major Mono Display reads small.
+          "panel-label",
+          "text-[10px] text-slurm-muted",
           "leading-tight text-center",
         )}
       >
@@ -110,12 +148,16 @@ export function LabeledKnob({
       </div>
       <div
         className={cn(
-          "text-[11px] font-mono tabular-nums leading-tight",
+          // VT323 LCD value readout with soft amber/cyan glow per skin.
+          // Slightly larger (13px) because VT323 has a fairly small
+          // x-height.
+          "lcd",
+          "text-[13px] tabular-nums leading-tight",
           "text-slurm-fg",
         )}
       >
         {display}
-        {unit && <span className="ml-0.5 text-slurm-muted">{unit}</span>}
+        {unit && <span className="ml-1 text-slurm-muted">{unit}</span>}
       </div>
     </div>
   )

@@ -29,6 +29,7 @@
 import * as React from "react"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 import { cn } from "@/lib/utils"
+import { useUiPrefsStore } from "@/stores/uiPrefsStore"
 
 // ── Building blocks ───────────────────────────────────────────────────
 
@@ -89,7 +90,12 @@ export function Tip({
   delayMs = 300,
   disabled,
 }: TipProps) {
-  if (disabled || !text) {
+  // Global tooltip-suppression toggle (UtilityBar's "tips" button).
+  // When the user has tooltips off we short-circuit BEFORE the Radix
+  // primitive mounts so there's zero hover/a11y/portal overhead — same
+  // exit path as the per-call `disabled` prop.
+  const tooltipsEnabled = useUiPrefsStore((s) => s.tooltipsEnabled)
+  if (disabled || !text || !tooltipsEnabled) {
     // Render children unwrapped so disabled tooltips don't add
     // accessibility-tree noise.
     return <>{children}</>

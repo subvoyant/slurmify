@@ -63,6 +63,20 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 
+# ── PyInstaller-runtime PATH bootstrap ──────────────────────────────────
+# When run from the bundled .app, sys._MEIPASS points at the temp dir
+# PyInstaller's bootloader extracted us to (e.g. /var/folders/.../T/
+# _MEI<hash>/).  We bundle ffmpeg next to the executable in that dir
+# (see slurmify-backend.spec) — but librosa's audioread fallback and
+# api/upload.py's shutil.which("ffmpeg") only look on PATH.  Prepend
+# _MEIPASS so both find the bundled ffmpeg even when the user has no
+# system ffmpeg installed.  In dev (no _MEIPASS attribute) this is a
+# no-op — the dev's PATH already has the system ffmpeg.
+if hasattr(sys, "_MEIPASS"):
+    os.environ["PATH"] = sys._MEIPASS + os.pathsep + os.environ.get("PATH", "")
+    print(f"[server] bundled-runtime PATH bootstrap: prepended {sys._MEIPASS}", flush=True)
+
+
 # ── Now we can import everything ────────────────────────────────────────
 import uvicorn
 from fastapi import FastAPI
@@ -76,7 +90,7 @@ from api import upload, slurmify, fx, render, files, analyze
 app = FastAPI(
     title="Slurmify Backend",
     description="FastAPI sidecar for the Tauri/React slurmify frontend (ADR-0022).",
-    version="0.2.0",
+    version="0.2.1",
     # Disable the auto-generated /docs and /redoc endpoints in production
     # — they're useful for development but not needed when the only
     # consumer is our own React frontend running on the same machine.
@@ -137,7 +151,7 @@ def health() -> dict[str, str | bool]:
     import slurmio
     return {
         "status":  "ok",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "ready":   True,
         "tmp_dir": slurmio.SESSION_TMP_DIR,
     }
@@ -172,7 +186,7 @@ def write_discovery_file(port: int) -> None:
         "port":       port,
         "pid":        os.getpid(),
         "started_at": time.time(),
-        "version":    "0.2.0",
+        "version":    "0.2.1",
     }
     # Atomic write — write to temp then rename, so a polling reader never
     # sees a half-written file.

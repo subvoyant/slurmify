@@ -1,5 +1,39 @@
 # Slurmify — Technical Documentation
 
+> **⚠️ Most of this document is v0.1.x-era (Gradio architecture).**
+>
+> The v0.2.0 release migrated the UI to **Tauri 2 + React 19** with a
+> **FastAPI Python sidecar**. The DSP engine (`slurmcore.py`,
+> `slurmio.py`) is unchanged; everything UI-related, the bootstrap,
+> the build pipeline, the file layout, and the embedded JavaScript
+> sections of this doc no longer reflect the runtime.
+>
+> **For v0.2.0+ work, prefer:**
+> - [`docs/adr/0022-tauri-react-migration.md`](docs/adr/0022-tauri-react-migration.md) — full migration spec, including the sidecar discovery contract, the Tauri capability model, and the rationale for each architectural choice.
+> - [`AGENT_DIGEST.md`](AGENT_DIGEST.md) — current code map (file layout, load-bearing identifiers, "where do I add X" recipes).
+> - [`CLAUDE.md`](CLAUDE.md) — agent operating instructions for the v0.2.0 codebase.
+>
+> **Sections that are still accurate for v0.2.0:**
+> - §4 Audio engine — the slurm DSP pipeline (`slurmcore.py` is unchanged).
+> - §5 Output formats and ffmpeg (`slurmio.py` is unchanged).
+> - §15 Glossary.
+> - The MAX RANDOM, note-mode, beat-mask, and stereo-pipeline rationale in §4 sub-sections.
+>
+> **Sections that are obsolete for v0.2.0:**
+> - §2 Runtime architecture (Gradio-era).
+> - §3 Bootstrap (replaced by `src-python/server.py` + `src-tauri/`).
+> - §6 The FX chain — the Web Audio preview is now in `src/hooks/useFxChain.ts` (React); the burn parity in `slurmcore.apply_fx()` still applies.
+> - §7 Gradio UI wiring (Gradio is gone).
+> - §8 Embedded JavaScript (`INIT_JS`) — replaced by React components.
+> - §9 Theme and CSS — replaced by Tailwind + shadcn/ui in `src/styles/`.
+> - §10 The build pipeline — replaced by `scripts/build-dmg.sh` + `scripts/build-sidecar.sh`.
+> - §11 Debugging recipes (Gradio-specific).
+> - §13–14 (point at v0.1.x file paths and version-bump procedure).
+>
+> A full refresh of this doc for v0.2.0 is on the docs backlog.
+
+---
+
 This document is the authoritative engineering reference for the Subvoyant
 SIENA Slurmer. It is written for two audiences in parallel:
 
@@ -1293,3 +1327,5 @@ with `ModuleNotFoundError`.
 ---
 
 *Last updated: 2026-05-07 · v0.1.6 · Stereo end-to-end through the slurmify pipeline (ADR-0021)*
+
+*v0.2.0 deprecation banner added 2026-05-09: most sections are v0.1.x-era. See ADR-0022, AGENT_DIGEST.md, and CLAUDE.md for current architecture.*

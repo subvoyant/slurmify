@@ -31,6 +31,67 @@
 @tailwind utilities;
 
 @layer base {
+  /* ── Skin-agnostic visual primitives (UI Pass 1) ────────────────
+   * These are the same across every skin — they're STRUCTURE, not
+   * COLOR.  Each skin's color block below tints them via mix-blend
+   * + opacity.
+   *
+   *   --slurm-pattern-brushed   — fine vertical-noise SVG, used as
+   *                               a low-opacity overlay on rack
+   *                               bodies to suggest brushed metal.
+   *   --slurm-pattern-grain     — coarse fractal noise for header
+   *                               surfaces ("worn enamel" feel).
+   *   --slurm-bezel-top         — gradient strip of the top edge of
+   *                               a panel (catches the "light").
+   *   --slurm-bezel-bottom      — bottom-edge counterpart.
+   *
+   * Stored as CSS variables so any component can opt in via
+   *   background-image: var(--slurm-pattern-brushed);
+   * without each component embedding its own SVG. */
+  :root {
+    /* Brushed-metal noise — narrow horizontal bands.  baseFrequency
+     * 0.65 0.02 makes the noise stretch horizontally → looks like a
+     * brushed/satin finish.  Color matrix knocks alpha down to
+     * ~0.06 so it's a whisper of texture, not a pattern. */
+    --slurm-pattern-brushed:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='b'><feTurbulence type='fractalNoise' baseFrequency='0.65 0.02' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.06 0'/></filter><rect width='100%25' height='100%25' filter='url(%23b)'/></svg>");
+
+    /* Coarser grain — used on the header strip for an enameled feel. */
+    --slurm-pattern-grain:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23g)'/></svg>");
+
+    /* Bezel gradients — applied on panel top/bottom edges for depth. */
+    --slurm-bezel-top:    linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.00) 100%);
+    --slurm-bezel-bottom: linear-gradient(0deg,   rgba(0,0,0,0.55)       0%, rgba(0,0,0,0.00)        100%);
+
+    /* LCD glow — used as a text-shadow on VT323 value readouts so
+     * digits feel like they're emitting light through frosted glass.
+     * Color comes from --slurm-orange in default/hardware skins (warm
+     * amber LED) and from --slurm-cyan in acid (mint backlight).
+     * Default points to amber; skins override below. */
+    --slurm-lcd-glow-color: var(--slurm-orange);
+
+    /* Screw highlight — radial gradient simulating a brushed-stainless
+     * head with a slot.  Used on the four corner-screw decorations. */
+    --slurm-screw-bg:
+      radial-gradient(circle at 35% 30%, #6a6a6a 0%, #2a2a2a 60%, #0e0e0e 100%);
+    --slurm-screw-slot: rgba(0,0,0,0.55);
+  }
+
+  /* Acid skin overrides — mint LCD glow, no brushed-metal warmth. */
+  :root[data-skin="acid"] {
+    --slurm-lcd-glow-color: var(--slurm-cyan);
+    --slurm-screw-bg:
+      radial-gradient(circle at 35% 30%, #2a8068 0%, #102f25 60%, #051410 100%);
+  }
+
+  /* Hardware skin overrides — amber LED glow, brassy screws. */
+  :root[data-skin="hardware"] {
+    --slurm-lcd-glow-color: var(--slurm-orange);
+    --slurm-screw-bg:
+      radial-gradient(circle at 35% 30%, #b08540 0%, #4a2f00 60%, #1a1500 100%);
+  }
+
   /* ── Default skin (subvoyant · default) ──────────────────────── */
   :root,
   :root[data-skin="default"] {
@@ -207,3 +268,214 @@
    * The simplest cross-platform way: only block when not localhost.
    * For now we always allow it; tighten in the W6 polish pass. */
 }
+
+/* ──────────────────────────────────────────────────────────────────
+ * Audio-gear utility classes (UI Pass 1)
+ *
+ * Pulled out into their own non-base layer so they don't contribute
+ * to the @layer base specificity wars; component utility classes
+ * win over base styles automatically.
+ * ────────────────────────────────────────────────────────────────── */
+
+@layer components {
+
+  /* .lcd — VT323 LCD-readout text with a soft glow halo so the
+   * digits feel BACKLIT instead of flat-printed.  Use on knob value
+   * displays, BPM textboxes, time-trim numerics, etc.  Inherits
+   * color from the parent unless overridden — so the value sits in
+   * the same hue as its rack module's accent. */
+  .lcd {
+    font-family: theme("fontFamily.lcd");
+    letter-spacing: 0.04em;
+    text-shadow:
+      0 0 1px var(--slurm-lcd-glow-color),
+      0 0 6px color-mix(in oklab, var(--slurm-lcd-glow-color) 40%, transparent);
+    /* VT323 has a slightly heavy default — pull weight back for
+     * smaller sizes so the digits don't look chunky in 11px. */
+    font-weight: 400;
+  }
+
+  /* .panel-label — Major Mono Display silk-screen label.  Used
+   * for rack module names, knob labels, section dividers.  Caps
+   * for visual rhythm; tracking pulls the letters apart so they
+   * read at small sizes. */
+  .panel-label {
+    font-family: theme("fontFamily.panel");
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    /* Soft drop shadow simulates etched-into-aluminum cast shadow. */
+    text-shadow:
+      0 1px 0 rgba(0, 0, 0, 0.55),
+      0 -1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  /* .brushed — fine satin-finish noise overlay, applied on top of
+   * any background to add subtle texture.  Pair with a base bg color
+   * via ::before so the texture doesn't replace the color, just
+   * adds to it. */
+  .brushed {
+    position: relative;
+    isolation: isolate;
+  }
+  .brushed::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--slurm-pattern-brushed);
+    background-size: 240px 240px;
+    background-repeat: repeat;
+    pointer-events: none;
+    z-index: 0;
+    /* Subtle vertical bezel — top edge a touch lighter, bottom edge
+     * a touch darker, suggests a panel mounted into a recess. */
+    box-shadow:
+      inset 0  1px 0 rgba(255, 255, 255, 0.04),
+      inset 0 -1px 0 rgba(0,   0,   0, 0.40);
+  }
+  .brushed > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* .grain — coarser noise for the rack module HEADER strip
+   * (suggests enameled metal).  Same ::before trick. */
+  .grain {
+    position: relative;
+    isolation: isolate;
+  }
+  .grain::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--slurm-pattern-grain);
+    background-size: 180px 180px;
+    background-repeat: repeat;
+    pointer-events: none;
+    z-index: 0;
+    mix-blend-mode: overlay;
+    opacity: 0.6;
+  }
+  .grain > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── FX module character treatment (Roland Chorus-Echo homage) ──
+   * The FX rack body switches from the generic .brushed surface to
+   * a two-zone faceplate inspired by vintage Roland gear:
+   *
+   *   • .fx-rail      — yellow pinstripe + black model-plate top
+   *                     strip.  Holds the master bypass + brand text.
+   *   • .fx-panel-mod — warm olive zone for modulators (dist/ring/
+   *                     trem).
+   *   • .fx-panel-time — cool steel zone for time-based effects
+   *                     (delay/phaser/reverb).
+   *   • .fx-subsection-header — small black bar with effect name +
+   *                     status LED, sitting at the top of each
+   *                     effect's knob row.
+   *   • .fx-subsection-rule — faint vertical divider hairline
+   *                     between adjacent effects in the same panel.
+   *
+   * Colors are ABSOLUTE (not skin-tinted) because the FX module's
+   * character is meant to read as a distinct piece of gear regardless
+   * of which Slurmify skin is active.  This matches Reason's design
+   * language where each device has its own permanent identity. */
+
+  .fx-rail {
+    /* Top-rail strip — black faceplate inset with a yellow Roland-
+     * style pinstripe right below it.  Subtle inner shadow on top so
+     * the rail reads as recessed into the rack body. */
+    background:
+      linear-gradient(180deg, #0c0c0c 0%, #1a1a1a 60%, #b89a3a 60%, #d4b94a 80%, #b89a3a 100%);
+    box-shadow:
+      inset  0 1px 0 rgba(255, 255, 255, 0.10),
+      inset  0 -2px 0 rgba(0,   0,   0, 0.50);
+  }
+
+  .fx-panel-mod {
+    /* Warm olive — modulation effects feel "warm/colorful". */
+    background:
+      linear-gradient(180deg, #303a18 0%, #232a10 100%);
+    box-shadow:
+      inset  0  1px 0 rgba(255, 255, 255, 0.05),
+      inset  0 -1px 0 rgba(0,   0,   0, 0.55),
+      inset  1px 0 0 rgba(0,   0,   0, 0.45),
+      inset -1px 0 0 rgba(0,   0,   0, 0.45);
+  }
+
+  .fx-panel-time {
+    /* Cool dark steel — time effects feel "cool/spatial". */
+    background:
+      linear-gradient(180deg, #232830 0%, #181b22 100%);
+    box-shadow:
+      inset  0  1px 0 rgba(255, 255, 255, 0.06),
+      inset  0 -1px 0 rgba(0,   0,   0, 0.55),
+      inset  1px 0 0 rgba(0,   0,   0, 0.45),
+      inset -1px 0 0 rgba(0,   0,   0, 0.45);
+  }
+
+  .fx-subsection-header {
+    /* Compact black header bar that sits at the top of each effect's
+     * knob row.  Contains the section name (panel-label etched) + a
+     * status LED chip on the left.  Thin hairline gradient on top so
+     * the bar reads as a separate plate sitting on the panel. */
+    background:
+      linear-gradient(180deg, #0a0a0a 0%, #050505 100%);
+    border-top:    1px solid rgba(255, 255, 255, 0.07);
+    border-bottom: 1px solid rgba(0,   0,   0, 0.55);
+  }
+
+  .fx-subsection-rule {
+    /* Faint vertical hairline between sub-sections in the same panel.
+     * Two-stop gradient so the line fades at top + bottom rather
+     * than slamming into the section header / panel edge. */
+    background:
+      linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.10) 30%, rgba(255,255,255,0.10) 70%, transparent 100%);
+  }
+
+  .fx-modelplate {
+    /* Roland-style black model-name plate.  Used for the master
+     * "FX CHAIN" wordmark in the top-right of the rail.  Inset shadow
+     * + faint top highlight gives a stamped-aluminum feel. */
+    background: #050505;
+    border:     1px solid rgba(255, 255, 255, 0.10);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      inset 0 -1px 0 rgba(0,   0,   0, 0.60);
+  }
+
+  /* .rack-screw — the four corner-mount Phillips screws.  Render via
+   * a single element that uses radial-gradient for the head + a
+   * pseudo-element ::after for the slot.  Subtle drop shadow
+   * underneath simulates the screw's rim catching the light from
+   * above-left. */
+  .rack-screw {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-image: var(--slurm-screw-bg);
+    box-shadow:
+      0 1px 1px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.1);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .rack-screw::after {
+    /* Phillips slot — a single thin diagonal stroke is enough at this
+     * size; trying to render a full crosshead at 10px goes muddy. */
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(135deg, transparent 44%, var(--slurm-screw-slot) 46%, var(--slurm-screw-slot) 54%, transparent 56%),
+      linear-gradient(45deg,  transparent 44%, var(--slurm-screw-slot) 46%, var(--slurm-screw-slot) 54%, transparent 56%);
+    border-radius: 50%;
+    /* Each screw rotates a tiny different amount so the row of four
+     * doesn't look stamped — set in the React component via
+     * inline `style="--screw-rot: 17deg"`.  Default 0 if unset. */
+    transform: rotate(var(--screw-rot, 0deg));
+  }
+
+}
+

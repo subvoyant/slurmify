@@ -44,19 +44,55 @@ export function DropZone() {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   // ── Upload action (shared by drop + click flows) ─────────────────
+  //
+  // History note: the original implementation rejected with terse
+  // strings ("/upload network error") and the catch block fell back to
+  // a literal "upload failed" if `e.message` was empty.  In practice
+  // the production DMG hit the empty-message path on every drop, so
+  // the user saw "upload failed / upload failed / click to retry" —
+  // two stacked copies of the fallback string with zero diagnostic
+  // value.  This rewrite makes every reject path carry a concrete
+  // message AND logs to console.error so even in builds without
+  // DevTools the next failure leaves a sidecar log trail.
   const upload = React.useCallback(async (file: File) => {
     setState({ kind: "uploading", progress: 0, filename: file.name })
 
+    let baseUrl = ""
     try {
-      const baseUrl = await getBackendUrl()
+      // ── Step 1 — resolve the backend URL ─────────────────────────
+      // If this throws we want a "backend offline" style message, not
+      // a generic "upload failed".  getBackendUrl() throws Error with
+      // a useful message already; we just re-wrap to add context.
+      try {
+        baseUrl = await getBackendUrl()
+      } catch (e) {
+        const msg = (e as Error)?.message ?? String(e)
+        throw new Error(`backend unreachable: ${msg}`)
+      }
 
+      // ── Step 2 — POST the file via XHR (for upload-progress) ─────
       // We use XMLHttpRequest (rather than fetch) so we can wire a
       // real upload progress bar.  fetch's body streams don't expose
       // upload progress in any browser yet — XHR is still the only
       // way in 2026.
       const result = await new Promise<SourceFile>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open("POST", `${baseUrl}/upload`)
+        try {
+          xhr.open("POST", `${baseUrl}/upload`)
+        } catch (openErr) {
+          // xhr.open() throws synchronously on bad URLs, security
+          // errors, or unsupported schemes.  Without this catch the
+          // exception escapes the Promise executor and the reject
+          // path never runs — the outer catch sees the raw thrown
+          // value, which in some WebKit builds is a DOMException
+          // with empty .message.
+          reject(new Error(
+            `xhr.open failed for ${baseUrl}/upload: ${
+              (openErr as Error)?.message || openErr?.toString() || "unknown error"
+            }`
+          ))
+          return
+        }
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
@@ -73,18 +109,57 @@ export function DropZone() {
             try {
               resolve(JSON.parse(xhr.responseText))
             } catch (e) {
-              reject(new Error(`bad JSON in /upload response: ${e}`))
+              reject(new Error(
+                `bad JSON in /upload response (status ${xhr.status}): ` +
+                `${(e as Error)?.message || e} — body starts with: ` +
+                xhr.responseText.slice(0, 120),
+              ))
             }
           } else {
-            reject(new Error(`/upload returned ${xhr.status}: ${xhr.responseText}`))
+            // Status 0 means "request never reached the server" —
+            // CORS rejection, mixed-content block, network drop, etc.
+            // Spell that out so the failure mode is obvious from the
+            // UI alone.
+            const friendly = xhr.status === 0
+              ? "request blocked or aborted before reaching the server (status 0 — CORS, mixed-content, or network drop)"
+              : `/upload returned ${xhr.status} ${xhr.statusText || ""}: ${xhr.responseText.slice(0, 200)}`
+            reject(new Error(friendly))
           }
         }
-        xhr.onerror = () => reject(new Error("/upload network error"))
-        xhr.onabort = () => reject(new Error("/upload aborted"))
+        xhr.onerror = () => {
+          // The Event passed to onerror is intentionally information-
+          // free per the XHR spec.  Surface what we DO know — readyState,
+          // status, statusText — so the user can tell whether the
+          // request even left the WebView.
+          reject(new Error(
+            `/upload network error (readyState=${xhr.readyState}, ` +
+            `status=${xhr.status}, statusText="${xhr.statusText}"). ` +
+            "Common causes on a Tauri build: CORS, mixed content, or " +
+            "the sidecar restarted on a new port.",
+          ))
+        }
+        xhr.onabort = () => reject(new Error(
+          `/upload aborted (readyState=${xhr.readyState}, status=${xhr.status})`,
+        ))
+        xhr.ontimeout = () => reject(new Error(
+          `/upload timed out (readyState=${xhr.readyState})`,
+        ))
 
-        const formData = new FormData()
-        formData.append("file", file)
-        xhr.send(formData)
+        try {
+          const formData = new FormData()
+          formData.append("file", file, file.name)
+          xhr.send(formData)
+        } catch (sendErr) {
+          // Same defensive wrap as xhr.open — synchronous throws from
+          // xhr.send aren't unheard of in WebKit (e.g., sandbox
+          // violations) and would otherwise propagate out as the
+          // raw value.
+          reject(new Error(
+            `xhr.send failed: ${
+              (sendErr as Error)?.message || sendErr?.toString() || "unknown error"
+            }`,
+          ))
+        }
       })
 
       // Success — drop the SourceFile into the store, which causes
@@ -93,10 +168,17 @@ export function DropZone() {
       setSourceFile(result)
       setState({ kind: "idle" })
     } catch (e) {
-      setState({
-        kind: "error",
-        message: (e as Error).message || "upload failed",
-      })
+      // Belt-and-braces: even if a non-Error sneaks through, produce a
+      // human-readable message instead of falling back to a literal
+      // "upload failed" placeholder.
+      const err = e as Error | undefined
+      const msg =
+        (err && err.message) ||
+        (e && typeof e === "object" && "toString" in e ? e.toString() : "") ||
+        (typeof e === "string" ? e : "") ||
+        "unknown error (no message on thrown value)"
+      console.error("[DropZone] upload failed:", e, "→", msg)
+      setState({ kind: "error", message: msg })
     }
   }, [setSourceFile])
 
@@ -137,7 +219,15 @@ export function DropZone() {
       {/* The drop target — square-ish, fixed-size on the left.  The
           dashed border is intentional (UI_DESIGN_BRIEF §7 lists drag
           targets as a legitimate deviation from the "no per-control
-          borders" rule). */}
+          borders" rule).
+
+          Layout rule: idle + uploading are h-24 fixed; error grows
+          vertically (min-h-24 + h-auto) so longer diagnostic messages
+          have room to wrap.  This matters now that the error message
+          carries actionable detail like XHR readyState/status — a
+          fixed h-24 would clip the message off-screen and we'd be
+          back to the original "two stacked 'upload failed' lines"
+          mystery. */}
       <Tip
         text={
           <>
@@ -156,7 +246,10 @@ export function DropZone() {
           onDragLeave={onDragLeave}
           onDrop={onDrop}
           className={cn(
-            "flex h-24 w-64 shrink-0 flex-col items-center justify-center gap-1.5",
+            "flex w-64 shrink-0 flex-col items-center justify-center gap-1.5",
+            // Height policy: idle/uploading stay compact; error
+            // expands so the diagnostic message is readable.
+            isError ? "min-h-24 h-auto py-2" : "h-24",
             "rounded border-2 border-dashed",
             "transition-colors",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slurm-cyan",
@@ -195,7 +288,15 @@ export function DropZone() {
         {state.kind === "error" && (
           <>
             <span className="text-[11px] font-medium">upload failed</span>
-            <span className="px-2 text-[10px] opacity-80">{state.message}</span>
+            {/* break-words + leading-tight + max-w-full so a long
+                XHR diagnostic message wraps inside the box rather
+                than overflowing to the right.  whitespace-normal
+                is also explicit — buttons have whitespace-nowrap
+                in some shadcn/ui resets, which would re-introduce
+                the "single ellipsised line" failure mode. */}
+            <span className="px-2 text-[10px] leading-tight opacity-90 break-words whitespace-normal max-w-full text-center">
+              {state.message}
+            </span>
             <span className="text-[10px] underline">click to retry</span>
           </>
         )}

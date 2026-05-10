@@ -66,75 +66,121 @@ export function RackModule({
 
   return (
     <section
+      // data-rack-name lets easter eggs (e.g. Bob, MaxFire) target
+      // a specific rack module via CSS selector and align their
+      // baseline to its top edge — see EasterEggHover's
+      // `alignToSelector` prop.  Cheap, no React tree coupling.
+      data-rack-name={name}
       className={cn(
-        "overflow-hidden rounded-md border border-slurm-border-2",
-        "shadow-[0_1px_0_rgba(255,255,255,0.04)_inset,0_1px_3px_rgba(0,0,0,0.6)]",
+        // Outer frame — slightly thicker shadow stack than before to
+        // suggest the rack is lifted above the page rather than
+        // flush to it.
+        "relative overflow-hidden rounded-md border border-slurm-border-2",
+        // flex flex-col + flex-1 on the body div: when the rack sits
+        // in a CSS-grid row that stretches all cells to the tallest
+        // module's height (default `align-items: stretch`), the body
+        // div grows with the section so the brushed-metal background
+        // fills the entire rack — no "missing background" gap below
+        // the controls when one sibling rack happens to be taller.
+        "flex flex-col",
+        "shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_2px_6px_rgba(0,0,0,0.65),0_8px_18px_-12px_rgba(0,0,0,0.55)]",
         className,
       )}
     >
       {/* ── Header bar ──────────────────────────────────────────── */}
       <header
         className={cn(
-          "flex h-7 items-center gap-2 px-2",
+          "grain",                 // coarse noise overlay (CSS utility)
+          "flex h-8 items-center gap-2 px-2",
           "select-none",
-          // Subtle inner shadow so the header has depth (no
-          // photorealism, just hint of inset top edge).
-          "shadow-[inset_0_-1px_0_rgba(0,0,0,0.35)]",
+          // Two-stop bevel: highlight on top edge, shadow on bottom.
+          "shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-1px_0_rgba(0,0,0,0.45)]",
+          // Outer hairline separator between header and body, in the
+          // module's own color so the seam reads as INTENTIONAL.
+          "border-b border-black/40",
         )}
         style={{
           backgroundColor: c.header,
-          // Subtle vertical gradient — top a touch lighter, bottom a
-          // touch darker — to evoke a real metal panel without going
-          // full skeuomorphic.
+          // Vertical gradient — light at top, dark at bottom.  Heavier
+          // contrast than v0 so the panel "catches the light" more
+          // visibly under the rack-shelf shadow.
           backgroundImage:
-            "linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.18))",
+            "linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.04) 30%, rgba(0,0,0,0.30) 100%)",
         }}
       >
-        {/* Status dot */}
+        {/* Status LED — same as before but with a stronger inset
+            shadow so the dot reads as a recessed indicator hole, with
+            the LED behind shining through.  When pulsing, the halo
+            doubles in size for emphasis. */}
         <span
           className={cn(
-            "inline-block h-2 w-2 shrink-0 rounded-full",
+            "inline-block h-2.5 w-2.5 shrink-0 rounded-full",
             pulsing && "animate-pulse-glow",
           )}
           style={{
             backgroundColor: dotColor,
             boxShadow: pulsing
-              ? `0 0 6px ${dotColor}`
-              : `0 0 3px rgba(0,0,0,0.5) inset, 0 0 4px ${dotColor}`,
+              ? `0 0 8px ${dotColor}, inset 0 0 2px rgba(0,0,0,0.6)`
+              : `inset 0 0 2px rgba(0,0,0,0.6), 0 0 5px ${dotColor}`,
           }}
         />
 
-        {/* Module name (tracked-out, uppercase) */}
+        {/* Module name — silk-screened panel label.  Major Mono Display
+            tracked out wide; a faint inset+drop combo simulates the
+            ink sitting on top of the metal.  Light text on the
+            module's color so each rack reads cleanly. */}
         <span
           className={cn(
-            "text-[11px] font-semibold uppercase tracking-[0.2em]",
-            "text-white/90",
-            "drop-shadow-[0_1px_0_rgba(0,0,0,0.6)]",
+            "panel-label",
+            "text-[12px] text-white/95",
           )}
+          style={{
+            // Override the default panel-label drop shadow with a
+            // colored variant so the cast shadow tints with the
+            // module's identity (warmer red on red panels, etc.).
+            textShadow:
+              "0 1px 0 rgba(0,0,0,0.55), 0 -1px 0 rgba(255,255,255,0.08)",
+          }}
         >
           {name}
         </span>
 
-        {/* Optional badge (right-side label slot, BEFORE the brand strip) */}
+        {/* Optional badge (right-side label slot, BEFORE the brand strip).
+            Uses VT323 LCD treatment when the badge is a status string
+            so it reads as a tiny indicator readout. */}
         {badge && (
-          <span className="ml-auto text-[10px] font-medium uppercase tracking-[0.15em] text-white/60">
+          <span
+            className={cn(
+              "ml-auto lcd",
+              "text-[12px] text-white/80",
+            )}
+            // VT323 doesn't need the LCD glow CSS var to be a specific
+            // color here — let it inherit the variable from the
+            // current skin (default = orange, acid = mint, hardware =
+            // amber).  Looks deliberate per-skin.
+          >
             {badge}
           </span>
         )}
 
-        {/* Brand strip — small wordmark on the right edge of every header.
-            Uses the same color as the header but slightly darker so it
-            reads as part of the panel, not floating type. */}
+        {/* Brand strip — pegboard-strip wordmark on the right edge.
+            Uses Major Mono Display so it matches the module name's
+            etched feel. */}
         <span
           className={cn(
-            "ml-auto flex items-center gap-1 pl-2",
-            "text-[9px] font-bold uppercase tracking-[0.25em] text-white/45",
+            "ml-auto flex items-center gap-1.5 pl-2",
+            "panel-label",
+            "text-[9px] text-white/55",
           )}
-          style={badge ? { marginLeft: "8px" } : undefined}
+          style={badge ? { marginLeft: "10px" } : undefined}
         >
           <span
-            className="inline-block h-3 w-[2px] rounded-sm"
-            style={{ backgroundColor: c.on }}
+            className="inline-block h-3.5 w-[2px] rounded-sm"
+            style={{
+              backgroundColor: c.on,
+              // Tiny glow so the brand strip pip reads as illuminated.
+              boxShadow: `0 0 4px ${c.on}`,
+            }}
           />
           slurm
         </span>
@@ -143,12 +189,35 @@ export function RackModule({
       {/* ── Body ────────────────────────────────────────────────── */}
       <div
         className={cn(
-          "bg-slurm-surface p-3",
-          // Subtle highlight at top of body to indicate the header sits on top.
-          "shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+          "brushed",            // satin-finish noise overlay
+          "relative",
+          "bg-slurm-surface px-3 py-3",
+          // flex-1 — claims any vertical slack the section was
+          // stretched to in a grid row.  Without this, when SLICING
+          // (or any taller sibling) makes the row tall, this rack's
+          // body stays content-sized and a strip of unstyled
+          // background shows through below the controls.
+          "flex-1",
+          // Highlight strip just under the header so the seam
+          // between header and body reads as a real edge.  Subtle
+          // bottom inset shadow simulates the body being recessed
+          // into the rack frame.
+          "shadow-[inset_0_1px_0_rgba(255,255,255,0.05),inset_0_-1px_0_rgba(0,0,0,0.40)]",
           bodyClassName,
         )}
       >
+        {/* Four corner Phillips screws.  Each is a 10×10 absolutely-
+            positioned circle with a faux-screw radial gradient.  The
+            CSS variable `--screw-rot` slightly varies the slot
+            rotation per screw so the row doesn't look stamped — small
+            but adds a lot of "real hardware" feel.  z-index 2 keeps
+            them ABOVE child content (children are z-index 1 inside
+            the .brushed wrapper). */}
+        <span className="rack-screw" style={{ top: 6,    left: 6,    "--screw-rot":  "17deg" } as React.CSSProperties} />
+        <span className="rack-screw" style={{ top: 6,    right: 6,   "--screw-rot": "-32deg" } as React.CSSProperties} />
+        <span className="rack-screw" style={{ bottom: 6, left: 6,    "--screw-rot":  "47deg" } as React.CSSProperties} />
+        <span className="rack-screw" style={{ bottom: 6, right: 6,   "--screw-rot":   "8deg" } as React.CSSProperties} />
+
         {children}
       </div>
     </section>

@@ -46,23 +46,133 @@ import { persist } from "zustand/middleware"
 // span more than one decade (a 0–1 normalized knob would flatten the
 // entire usable space into a tiny rotation arc).
 
+/** Distortion curve shape — controls the WaveShaper's character.
+ *  Each shape uses the same `distDrive` knob for intensity but yields
+ *  a different sonic signature:
+ *    • soft  — tanh, smooth tube-like saturation (legacy default)
+ *    • hard  — clipped to ±1, aggressive edge
+ *    • fold  — wavefolding, sine-shaped wrap-around
+ *    • fuzz  — half-wave rectified asymmetric clipping (transistor fuzz)
+ */
+export type DistShape = "soft" | "hard" | "fold" | "fuzz"
+
+/** Ring-mod sweep waveform — drives the LFO that modulates the
+ *  carrier frequency over time.  sine/saw/square map to
+ *  OscillatorNode types directly; noise uses a band-limited noise
+ *  source for random wandering ("sample-and-hold-ish" character). */
+export type SweepWave = "sine" | "saw" | "square" | "noise"
+
 export interface FxParams {
-  // ── Distortion (WaveShaper with tanh curve) ──────────────────────
-  /** Drive amount.  0 = bypass.  1 = heavy clipping.  Maps to the
-   *  curve constant k = 1 + drive * 29 in _fxCurve. */
+  // ── Master ───────────────────────────────────────────────────────
+  /** Master FX bypass.  When true, every effect is set to a unit-
+   *  passthrough state — signal flows from input straight to output
+   *  unchanged (modulo numerical noise from oscillators that stay
+   *  running but at zero depth). */
+  bypass: boolean
+
+  // ── Distortion (WaveShaper with selectable curve shape) ──────────
+  /** Per-effect bypass switch. */
+  distEnabled: boolean
+  /** Pre-WaveShaper input gain in dB.  -24 to +24.  Adds drive
+   *  upstream so even "soft" shapes can be pushed hard at high gain. */
+  distGain: number
+  /** Drive amount, 0–1.  At 0, the curve is identity (pass-through). */
   distDrive: number
+  /** Curve shape — see DistShape comment above. */
+  distShape: DistShape
+  /** Tone tilt EQ, -1 (dark) to +1 (bright).  Drives a single
+   *  high-shelf BiquadFilter applied AFTER the distortion stage. */
+  distTone: number
 
   // ── Ring modulator (sine osc → gain.gain) ─────────────────────────
-  /** Carrier frequency in Hz.  Sub-100 = tremolo flutter.  100-500 =
-   *  classic ring-mod metallic.  500+ = inharmonic crunch. */
+  /** Per-effect bypass switch. */
+  ringEnabled: boolean
+  /** Carrier frequency in Hz, used as the static value when the sweep
+   *  is off (ringSweepRate = 0).  When the sweep is on, this knob is
+   *  ignored and the carrier oscillates between low/high cutoffs. */
   ringFreq: number
   /** Modulation depth.  0 = bypass (gain stays at 1).  1 = full ring
    *  modulation. */
   ringDepth: number
+  /** Ring-mod LFO sweep speed in Hz.  When > 0, the carrier
+   *  frequency sweeps between ringSweepLow and ringSweepHigh at this
+   *  rate (overriding the static ringFreq).  0 = sweep off, static
+   *  freq applies. */
+  ringSweepRate: number
+  /** Bottom cutoff of the sweep range in Hz.  Carrier won't go
+   *  below this when sweep is active. */
+  ringSweepLow: number
+  /** Top cutoff of the sweep range in Hz.  Carrier won't go above
+   *  this when sweep is active. */
+  ringSweepHigh: number
+  /** Sweep waveform type.  sine/saw/square map directly to
+   *  OscillatorNode types; noise uses a band-limited random source
+   *  for "sample-and-hold-ish" wandering. */
+  ringSweepWave: SweepWave
+
+  // ── Tremolo (sine osc → gain pre-multiplier) ─────────────────────
+  /** Per-effect bypass switch. */
+  tremoloEnabled: boolean
+  /** LFO rate in Hz.  0.05 = slow swell.  5+ = vibrato-like flutter. */
+  tremoloRate: number
+  /** Rate-mode toggle.  "Hz" = use tremoloRate as-is.  "♪" = compute
+   *  Hz from tremoloRateNote at the current effective BPM (e.g.
+   *  "1/8" at 120 BPM = 4 Hz).  The note→Hz conversion is
+   *  `1000 / noteToMs(note, bpm)`. */
+  tremoloRateMode: "Hz" | "♪"
+  /** Note fraction string used when tremoloRateMode is "♪".
+   *  Same grammar as src/lib/note-mode.ts. */
+  tremoloRateNote: string
+  /** Modulation depth, 0–1.  At 1, signal is fully modulated (silence
+   *  at LFO troughs).  0.5 is a classic "bouncing" tremolo. */
+  tremoloDepth: number
+  /** Phase offset in degrees, 0–360.  Shifts when the LFO peak hits
+   *  relative to the audio.  Implementation: a DelayNode after the
+   *  LFO delays the modulation signal by (phase/360) × period.  At
+   *  rate=4 Hz, phase=90° introduces a 62.5 ms delay on the LFO
+   *  signal.  Useful for time-aligning tremolo "hits" with downbeats
+   *  or other rhythmic elements. */
+  tremoloPhase: number
+
+  // ── Panner (StereoPannerNode + LFO sweep) ─────────────────────────
+  /** Per-effect bypass switch. */
+  pannerEnabled: boolean
+  /** Wet/dry mix.  0 = bypass (signal stays centered).  1 = full
+   *  panning effect (signal sweeps L↔R within the spread range). */
+  pannerMix: number
+  /** Sweep LFO speed in Hz.  When 0, panner sits at center without
+   *  movement (or at the spread midpoint, which is also center). */
+  pannerSweepRate: number
+  /** Spread to the LEFT, 0–1.  Controls how far the pan sweeps
+   *  from center toward full left.  At 0 the carrier never goes
+   *  left of center; at 1 it reaches full L (-1).  Decoupled from
+   *  pannerSpreadR so the sweep can be asymmetric (e.g., pan only
+   *  on the right side, or biased toward one channel). */
+  pannerSpreadL: number
+  /** Spread to the RIGHT, 0–1.  Mirror of pannerSpreadL — controls
+   *  how far the carrier sweeps from center toward full right.
+   *  Engine: low = -pannerSpreadL, high = +pannerSpreadR; midpoint
+   *  = (R-L)/2; half-range = (R+L)/2. */
+  pannerSpreadR: number
+  /** Sweep waveform — same options as the ring-mod sweep. */
+  pannerSweepWave: SweepWave
 
   // ── Delay (DelayNode + feedback gain + dry/wet) ──────────────────
-  /** Delay time in seconds.  0–2 (DelayNode max). */
+  /** Per-effect bypass switch. */
+  delayEnabled: boolean
+  /** Delay time in seconds.  0–2 (DelayNode max).  Used directly
+   *  when delayTimeMode is "ms"; ignored when mode is "♪" (the note
+   *  fraction is converted to ms via the effective BPM at apply
+   *  time). */
   delayTime: number
+  /** Time-mode toggle.  "ms" = use delayTime as-is.  "♪" = compute
+   *  ms from delayTimeNote at the current effective BPM (matches the
+   *  slurmify side's note-mode pattern, ADR-0020). */
+  delayTimeMode: "ms" | "♪"
+  /** Note fraction string used when delayTimeMode is "♪".
+   *  Same grammar as src/lib/note-mode.ts (e.g., "1/4", "1/8.",
+   *  "1/16T"). */
+  delayTimeNote: string
   /** Feedback gain.  0 = single repeat.  ~0.9 = self-oscillating
    *  drone.  Clamp ≤ 0.95 to avoid runaway. */
   delayFb: number
@@ -70,22 +180,75 @@ export interface FxParams {
   delayMix: number
 
   // ── Phaser (4 allpass filters + LFO) ─────────────────────────────
+  /** Per-effect bypass switch. */
+  phaserEnabled: boolean
   /** LFO rate in Hz.  0.05 = slow sweep (~20 s).  5+ = throbbing. */
   phaseRate: number
   /** Phaser depth.  0 = bypass.  1 = full sweep + balanced wet/dry
    *  (matches v0.1.6's 0.5/0.5 mix when depth=1). */
   phaseDepth: number
+
+  // ── Reverb (ConvolverNode with generated IR) ─────────────────────
+  /** Per-effect bypass switch. */
+  reverbEnabled: boolean
+  /** Reverb tail length in seconds, 0.1–5.  Longer = bigger room.
+   *  Changing this regenerates the impulse response (cheap — runs
+   *  in ~10ms at 44.1kHz × 5s; throttled in useFxChain). */
+  reverbSize: number
+  /** Decay shape exponent, 1–6.  1 = linear fade.  Higher = faster
+   *  initial decay (more "concrete bunker" early, longer "concert
+   *  hall" tail). */
+  reverbDecay: number
+  /** Wet/dry mix.  0 = bypass.  1 = full wet. */
+  reverbMix: number
 }
 
 export const defaultFxParams = (): FxParams => ({
-  distDrive:  0,
-  ringFreq:   200,
-  ringDepth:  0,
-  delayTime:  0.3,
-  delayFb:    0.35,
-  delayMix:   0,
-  phaseRate:  1.0,
-  phaseDepth: 0,
+  bypass:         false,
+
+  distEnabled:    true,
+  distGain:       0,
+  distDrive:      0,
+  distShape:      "soft",
+  distTone:       0,
+
+  ringEnabled:    true,
+  ringFreq:       200,
+  ringDepth:      0,
+  ringSweepRate:  0,        // 0 = sweep off (static freq applies)
+  ringSweepLow:   100,
+  ringSweepHigh:  800,
+  ringSweepWave:  "sine",
+
+  tremoloEnabled:  true,
+  tremoloRate:     4,
+  tremoloRateMode: "Hz",
+  tremoloRateNote: "1/4",
+  tremoloDepth:    0,
+  tremoloPhase:    0,
+
+  pannerEnabled:   true,
+  pannerMix:       0,
+  pannerSweepRate: 0.5,
+  pannerSpreadL:   1,
+  pannerSpreadR:   1,
+  pannerSweepWave: "sine",
+
+  delayEnabled:   true,
+  delayTime:      0.3,
+  delayTimeMode:  "ms",
+  delayTimeNote:  "1/8",
+  delayFb:        0.35,
+  delayMix:       0,
+
+  phaserEnabled:  true,
+  phaseRate:      1.0,
+  phaseDepth:     0,
+
+  reverbEnabled:  true,
+  reverbSize:     1.5,
+  reverbDecay:    2.5,
+  reverbMix:      0,
 })
 
 // ── Burn-job state ───────────────────────────────────────────────────
@@ -166,7 +329,12 @@ export const useFxStore = create<FxStore>()(
       clearBurn: () => set(initialBurnState),
     }),
     {
-      name: "slurmify_fx_session_v1",
+      // BUMPED v5 → v6: the single pannerSpread knob was reverted
+      // to the asymmetric two-knob form (pannerSpreadL +
+      // pannerSpreadR) so the user can clamp the sweep to one
+      // side.  Stale v5 entries lack the new fields and would crash
+      // on first knob render.
+      name: "slurmify_fx_session_v6",
       // Only the user-meaningful preferences (knob positions) survive
       // reloads.  Burn-job state stays transient because burnedFileId
       // references a backend-side file that's gone after a sidecar

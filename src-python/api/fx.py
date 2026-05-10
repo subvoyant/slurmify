@@ -20,7 +20,9 @@ a different operation.
 
 from __future__ import annotations
 
+import sys
 import threading
+import traceback
 import uuid
 
 import librosa
@@ -62,15 +64,48 @@ def start_burn_fx(req: BurnFxRequest):
 
     Same job-and-SSE pattern as /slurmify; subscribe to
     /jobs/{job_id}/progress for updates.
+
+    Diagnostics
+    ───────────
+    Prints `[slurm-api/burn-fx]` lines to stdout for every entry,
+    job-spawn, and unhandled exception inside the worker thread.  In a
+    bundled DMG those surface in Console.app under the
+    `slurmify-backend` process — the same posture as /upload after the
+    "two stacked 'upload failed' lines" incident (May 2026).  Burn-FX
+    has the additional wrinkle that the worker runs on a daemon thread,
+    so an uncaught exception there *would* otherwise vanish silently
+    (no traceback, just a job that never reaches done=True from the
+    SSE client's perspective).  The wrapper at the bottom of
+    `_run_burn_fx_blocking` mark_done's with a structured error.
     """
+    print(
+        f"[slurm-api/burn-fx] received: file_id={req.file_id!r} "
+        f"output_format={req.output_format!r} "
+        f"dist_drive={req.dist_drive} ring_freq={req.ring_freq} "
+        f"ring_depth={req.ring_depth} delay_sec={req.delay_sec} "
+        f"delay_fb={req.delay_fb} delay_mix={req.delay_mix} "
+        f"phase_rate={req.phase_rate} phase_depth={req.phase_depth}",
+        flush=True,
+    )
+
     src_path = resolve_file(req.file_id)
     if src_path is None:
+        print(
+            f"[slurm-api/burn-fx] unknown file_id {req.file_id!r} — registry has "
+            f"no entry; the file was probably wiped on a sidecar restart.",
+            file=sys.stderr,
+            flush=True,
+        )
         raise HTTPException(status_code=404, detail=f"unknown file_id: {req.file_id}")
 
     prune_expired()
 
     job = Job(id=str(uuid.uuid4()))
     JOBS[job.id] = job
+    print(
+        f"[slurm-api/burn-fx] spawned job {job.id[:8]} on src_path={src_path!r}",
+        flush=True,
+    )
 
     threading.Thread(
         target=_run_burn_fx_blocking,
@@ -153,9 +188,25 @@ def _run_burn_fx_blocking(job: Job, req: BurnFxRequest, src_path: str) -> None:
         out_path = slurmio._write_audio(export, sr, req.output_format)
         output_id = register_file(out_path)
         _set(1.0, "Done ✓")
+        print(
+            f"[slurm-api/burn-fx] OK job={job.id[:8]} "
+            f"output_id={output_id} out_path={out_path!r}",
+            flush=True,
+        )
         job.mark_done(output_id=output_id)
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        # Print the full traceback to stderr so it surfaces in
+        # Console.app under the slurmify-backend process when running
+        # the bundled DMG.  Without this, the failure would only
+        # surface as `error="burn-fx failed: <type>: <msg>"` in the
+        # SSE payload — useful but missing the line numbers needed
+        # to triage non-trivial bugs.
+        print(
+            f"[slurm-api/burn-fx] FAILED job={job.id[:8]} "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc(file=sys.stderr)
         job.mark_done(error=f"burn-fx failed: {type(e).__name__}: {e}")
