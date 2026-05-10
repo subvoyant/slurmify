@@ -80,30 +80,17 @@ foreach ($cli in @("ffmpeg", "rubberband")) {
     $found = Get-Command $cli -ErrorAction SilentlyContinue
     if (-not $found) {
         if ($cli -eq "rubberband") {
-            Write-Error @"
-[build-sidecar] ERROR: rubberband.exe not found on PATH.
-                 rubberband is NOT a Chocolatey package.  Install the
-                 official Windows binary from Breakfast Quay:
-
-                 `$ver = "3.1.2"
-                 Invoke-WebRequest `
-                     -Uri "https://breakfastquay.com/files/releases/rubberband-`$ver-gpl-executable-windows.zip" `
-                     -OutFile "`$env:TEMP\rubberband.zip"
-                 Expand-Archive -Path "`$env:TEMP\rubberband.zip" `
-                     -DestinationPath "`$env:LOCALAPPDATA\rubberband" -Force
-                 # Then add the inner folder containing rubberband.exe
-                 # to your user PATH and restart PowerShell.
-
-                 Full instructions: docs/WINDOWS_BUILD.md §B.2.
-"@
+            # Two-line plain string instead of a here-string because here-
+            # strings with backtick-escaped variables hit a PowerShell
+            # parser quirk that broke the v0.2.1-win-2 CI build.  Keep
+            # this simple — the docs have the full install snippet.
+            Write-Error "[build-sidecar] ERROR: rubberband.exe not found on PATH. rubberband is NOT a Chocolatey package; install the Breakfast Quay Windows binary per docs/WINDOWS_BUILD.md section B.2."
         } else {
-            Write-Error @"
-[build-sidecar] ERROR: $cli not found on PATH.
-                 Install with: choco install $cli
-"@
+            Write-Error "[build-sidecar] ERROR: $cli not found on PATH. Install with: choco install $cli"
         }
+    } else {
+        Write-Host "[build-sidecar] $cli at $($found.Source)"
     }
-    Write-Host "[build-sidecar] $cli at $($found.Source)"
 }
 
 # ── Host triple — what Tauri's externalBin resolver expects ────────────
