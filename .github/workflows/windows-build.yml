@@ -162,9 +162,21 @@ jobs:
         # after 4s" smoke test — CI containers sometimes can't bind
         # to a localhost port cleanly, and the smoke test is a nice-to-
         # have not a need-to-have.
+        #
+        # Invoke via `pwsh` (PowerShell 7), NOT `powershell` (Windows
+        # PowerShell 5.1).  The script is UTF-8 without a BOM and
+        # contains em-dashes and box-drawing characters in its
+        # comments; Windows PowerShell 5.1 defaults to Windows-1252
+        # for BOM-less files and mis-decodes those bytes into phantom
+        # characters that break the parser ("string is missing the
+        # terminator" cascading into bogus 'missing }' errors on every
+        # if-block downstream).  pwsh defaults to UTF-8 and handles
+        # the file correctly.  This was the root cause of the
+        # v0.2.1-win-2 and -3 CI failures.
         env:
           PYINSTALLER_NO_SMOKE: "1"
-        run: powershell -ExecutionPolicy Bypass -File scripts\build-sidecar.ps1
+        shell: pwsh
+        run: pwsh -ExecutionPolicy Bypass -File scripts\build-sidecar.ps1
 
       # ── Frontend deps ────────────────────────────────────────────
       - name: Install frontend deps
