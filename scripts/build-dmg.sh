@@ -61,8 +61,10 @@
 #       cd src-python
 #       python3 -m venv .venv && source .venv/bin/activate
 #       pip install -e ".[dev]"
-#     The build-sidecar.sh script picks up `python3` by default; set
-#     $PY to override.
+#     build-sidecar.sh auto-detects src-python/.venv/bin/python if
+#     present (the standard layout), so you don't need to activate
+#     the venv or set $PY for the common case.  Override with $PY
+#     for non-standard interpreter locations.
 #
 # Usage:
 #   ./scripts/build-dmg.sh                # full build

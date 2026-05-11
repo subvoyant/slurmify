@@ -21,6 +21,7 @@
 
 import { useCallback, useRef } from "react"
 import { useSlurmStore, type SlurmParams, type SlurmOutput } from "@/stores/slurmStore"
+import { useFxStore } from "@/stores/fxStore"
 import { getBackendUrl } from "@/lib/api"
 
 /**
@@ -179,6 +180,23 @@ export function useSlurmifyJob(): SlurmifyJobApi {
                 const url = `${baseUrl}/files/${payload.output_id}`
                 const output: SlurmOutput = { output_id: payload.output_id, url }
                 setOutput(output)
+                // ── Invalidate any prior burn-FX result ─────────────
+                // When a new slurm output exists, any previously
+                // burned-FX file references the OLD slurm output and
+                // is stale.  Without this clear, the OUTPUT player's
+                // priority logic (`burnedFileId ?? output.output_id`
+                // in App.tsx ~1040) would keep playing the old burn
+                // even though a fresh slurm just finished — a
+                // confusing "I rerun slurmify but it didn't change"
+                // bug.  We clear AFTER setOutput so there's no flash
+                // of empty state during the transition.
+                //
+                // Note: clearBurn() only wipes the JS-side state.
+                // The temp file backing the old burn lingers in
+                // SESSION_TMP_DIR until process exit, but nothing
+                // references it anymore so it's harmless until the
+                // session cleanup sweep (ADR-0011).
+                useFxStore.getState().clearBurn()
                 finishJob(output, null)
                 resolve(output)
               } else {

@@ -38,9 +38,50 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT/src-python"
 
-# Pick the Python interpreter.  Default to whatever `python3` resolves
-# to, but allow override via $PY for users with custom venvs.
-PY="${PY:-python3}"
+# Pick the Python interpreter.
+#
+# Priority:
+#   1. $PY env var if explicitly set (escape hatch for unusual setups).
+#   2. The local venv at src-python/.venv/bin/python if present.
+#      This is the common case: a developer who ran the standard
+#      `python -m venv src-python/.venv && pip install -e
+#      "src-python[dev]"` bootstrap.
+#   3. System `python3` on PATH.
+#
+# Why auto-detect the venv: the build host's bare `python3` often
+# resolves to anaconda base / system python / Homebrew python with
+# different site-packages than the Slurmify venv.  The most common
+# failure mode used to be "ERROR: PyInstaller not installed in this
+# Python" — PyInstaller WAS installed (in the venv), just not in the
+# bare interpreter that PATH happened to resolve.  Auto-detection
+# removes that footgun without breaking the explicit $PY override
+# for power users with non-standard layouts.
+if [ -z "${PY:-}" ]; then
+    LOCAL_VENV_PY="$REPO_ROOT/src-python/.venv/bin/python"
+    if [ -x "$LOCAL_VENV_PY" ]; then
+        PY="$LOCAL_VENV_PY"
+        # Activate the venv for any subprocess PyInstaller spawns.
+        # Functionally equivalent to `source .venv/bin/activate` but
+        # without the prompt-tweaking side effects.  Setting
+        # VIRTUAL_ENV + PATH covers:
+        #   • PyInstaller hooks that re-invoke `python` by basename
+        #     (they'd otherwise hit whatever's first on the parent
+        #     shell's PATH — typically anaconda or system python).
+        #   • `pip` invocations inside hooks, which look up `python`
+        #     the same way.
+        #   • Any `pip install` follow-up the user might run manually
+        #     in the same shell — they get the venv, not anaconda.
+        # See PEP 405 for the env-var contract `python -m venv`
+        # follows; activate just exports these two vars and tweaks
+        # PS1 / aliases.  We skip the cosmetic bits.
+        export VIRTUAL_ENV="$REPO_ROOT/src-python/.venv"
+        export PATH="$VIRTUAL_ENV/bin:$PATH"
+        echo "[build-sidecar] Auto-detected venv: $LOCAL_VENV_PY (VIRTUAL_ENV + PATH activated)"
+    else
+        PY="python3"
+        echo "[build-sidecar] No venv at $LOCAL_VENV_PY — falling back to system python3"
+    fi
+fi
 
 # ── Sanity checks ──────────────────────────────────────────────────────
 echo "[build-sidecar] Using $($PY --version) at $(which "$PY")"

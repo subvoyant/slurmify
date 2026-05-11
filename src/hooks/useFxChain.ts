@@ -63,6 +63,50 @@ declare global {
   }
 }
 
+// ── Phase-vocoder AudioWorklet (real-time pitch shifting) ──────────
+//
+// Vendored from olvb/phaze (Unlicense, GPL-3.0-compatible — see file
+// header for provenance).  Switched away from @soundtouchjs/audio-
+// worklet in v0.3 polish because the user reported residual perceived
+// latency even after tuning SoundTouch's WSOLA Stretch to its floor
+// (~25 ms internal + ~10-15 ms Web Audio output ≈ 35-45 ms total —
+// just above the 20-30 ms threshold where it stops feeling live).
+//
+// Phase-vocoder algorithms reach ~12 ms internal latency without
+// audible compromise (per Laroche & Dolson 1999), so total perceived
+// latency drops to ~20-25 ms — comfortably below the threshold.
+// Burn-fx (offline rendering) keeps using pyrubberband server-side
+// for higher-quality phase-vocoder; this is live preview only.
+//
+// API of the vendored worklet:
+//   • Registers as "phase-vocoder-processor".
+//   • One AudioParam: `pitchFactor` (multiplier).  1.0 = no shift;
+//     2.0 = +12 semitones; 0.5 = -12 semitones.  Convert UI
+//     semitones to pitchFactor with Math.pow(2, semitones / 12).
+//   • Output is stereo when input is stereo (the OLAProcessor base
+//     class handles channel dispatch).
+//
+// We cache the addModule promise per AudioContext in a WeakMap so
+// repeated buildFxChain() calls on the same ctx don't re-register.
+// On context close (element rebind, ADR-0003) the WeakMap entry GCs
+// along with the ctx.
+//
+// If the load fails the catch in buildFxChain sets pitchWorklet=null
+// and the dry path carries through unchanged — pitch knobs become a
+// no-op but the rest of the FX chain still works.
+import pitchWorkletUrl from "../audio-worklets/phase-vocoder-processor.js?url"
+
+const pitchModulePromises = new WeakMap<AudioContext, Promise<void>>()
+
+function ensurePitchWorklet(ctx: AudioContext): Promise<void> {
+  let p = pitchModulePromises.get(ctx)
+  if (!p) {
+    p = ctx.audioWorklet.addModule(pitchWorkletUrl)
+    pitchModulePromises.set(ctx, p)
+  }
+  return p
+}
+
 interface FxNodes {
   ctx: AudioContext
   /** The audio element this chain is bound to.  When the React
@@ -133,6 +177,26 @@ interface FxNodes {
   phaseLFOGain: GainNode
   phaseDry:     GainNode
   phaseWet:     GainNode
+
+  // ── Pitch shifter (SoundTouchJS AudioWorklet, v0.3 Phase 4) ──────
+  // Spliced between phaser and reverb so the reverb tail blooms from
+  // the pitched signal.  pitchSum collapses the phaser dry+wet pair
+  // into a single signal that fans out into dry + wet pitch paths;
+  // pitchOut recombines them and feeds reverb's dry+wet pair.
+  //
+  // The SoundTouchNode itself may be null if the AudioWorklet module
+  // failed to load (e.g., the user is on an old browser without
+  // AudioWorklet support).  In that case the wet path is silent and
+  // only the dry path carries through — pitch is a no-op but the
+  // chain still works.
+  pitchSum:     GainNode
+  /** Phaze phase-vocoder AudioWorkletNode.  Null if the worklet
+   *  module failed to load — in that case the wet path is silent
+   *  and only the dry path carries through. */
+  pitchWorklet: AudioWorkletNode | null
+  pitchDry:     GainNode
+  pitchWet:     GainNode
+  pitchOut:     GainNode
 
   // ── Reverb (ConvolverNode + generated IR) ────────────────────────
   reverb:    ConvolverNode
@@ -329,7 +393,17 @@ function applyFxParams(n: FxNodes, p: FxParams, st: ApplyState): void {
   // Carrier frequency is either the static ringFreq (sweep off) or
   // the midpoint of the sweep range (sweep on).
   const ringOn = !masterOff && p.ringEnabled
-  const sweepActive = ringOn && p.ringSweepRate > 0
+  // Resolve the effective sweep rate.  In Hz mode use p.ringSweepRate
+  // directly; in ♪ mode convert the note label at the current BPM
+  // (same `1000 / noteToMs` formula as tremolo above).  See ADR-0020
+  // for the note-grammar source-of-truth rule.
+  let effectiveRingSweepRate = p.ringSweepRate
+  if (p.ringSweepRateMode === "♪") {
+    const bpm = resolveEffectiveBpm()
+    const ms  = noteToMs(p.ringSweepRateNote, bpm)
+    if (ms > 0) effectiveRingSweepRate = 1000 / ms
+  }
+  const sweepActive = ringOn && effectiveRingSweepRate > 0
   if (sweepActive) {
     const lo = Math.max(0, Math.min(p.ringSweepLow, p.ringSweepHigh))
     const hi = Math.max(p.ringSweepLow, p.ringSweepHigh)
@@ -338,12 +412,12 @@ function applyFxParams(n: FxNodes, p: FxParams, st: ApplyState): void {
     n.ringOsc.frequency.value = mid
     n.sweepRangeGain.gain.value = range
     // For sine/saw/square: feed the LFO at sweep rate.
-    n.sweepLFO.frequency.value = p.ringSweepRate
+    n.sweepLFO.frequency.value = effectiveRingSweepRate
     // For noise: scale the noise-filter cutoff to the rate so a
     // higher rate = faster wandering.  Cutoff = rate × 4 Hz keeps
     // the noise SLOW at low rates (musical wobble) and frenetic
     // at high rates.
-    n.sweepNoiseFilter.frequency.value = Math.max(0.5, p.ringSweepRate * 4)
+    n.sweepNoiseFilter.frequency.value = Math.max(0.5, effectiveRingSweepRate * 4)
   } else {
     n.ringOsc.frequency.value = p.ringFreq
     n.sweepRangeGain.gain.value = 0
@@ -429,11 +503,44 @@ function applyFxParams(n: FxNodes, p: FxParams, st: ApplyState): void {
 
   // ── Phaser ────────────────────────────────────────────────────────
   // Depth controls both LFO amplitude AND wet/dry mix in lockstep.
+  // Rate honours Hz / ♪ mode (v0.3) — same pattern as tremolo.
   const phaseOn = !masterOff && p.phaserEnabled
-  n.phaseLFO.frequency.value = p.phaseRate
+  let effectivePhaseRate = p.phaseRate
+  if (p.phaseRateMode === "♪") {
+    const bpm = resolveEffectiveBpm()
+    const ms  = noteToMs(p.phaseRateNote, bpm)
+    if (ms > 0) effectivePhaseRate = 1000 / ms
+  }
+  n.phaseLFO.frequency.value = effectivePhaseRate
   n.phaseLFOGain.gain.value  = phaseOn ? 500 * p.phaseDepth : 0
   n.phaseDry.gain.value      = phaseOn ? 1 - p.phaseDepth * 0.5 : 1
   n.phaseWet.gain.value      = phaseOn ? p.phaseDepth * 0.5     : 0
+
+  // ── Pitch shifter (phaze phase-vocoder, v0.3 polish) ─────────────
+  // phaze's worklet exposes ONE param: `pitchFactor` (multiplier).
+  // We convert the UI semitones + cents into the multiplier with
+  // pitchFactor = 2^(semitones / 12).  e.g. -12 semitones → 0.5
+  // (octave down), 0 → 1.0 (passthrough), +12 → 2.0 (octave up).
+  //
+  // The dry/wet gain pair handles the mix knob (phaze always outputs
+  // 100% wet on the worklet's output — Slurmify's dry/wet blend is a
+  // surrounding parallel-paths construct, see buildFxChain).
+  //
+  // When pitchWorklet is null (load failed) or the rack is disabled,
+  // force dry=1 / wet=0 so the chain bypasses pitch cleanly.
+  const pitchOn = !masterOff && p.pitchEnabled && n.pitchWorklet !== null
+  if (n.pitchWorklet) {
+    const combinedSemitones = p.pitchSemitones + p.pitchCents / 100
+    const pitchFactor = Math.pow(2, combinedSemitones / 12)
+    // setTargetAtTime gives a smooth ~20ms ramp so dragging the knob
+    // doesn't zipper-noise on rapid changes.
+    n.pitchWorklet
+      .parameters
+      .get("pitchFactor")!
+      .setTargetAtTime(pitchFactor, n.ctx.currentTime, 0.02)
+  }
+  n.pitchDry.gain.value = pitchOn ? 1 - p.pitchMix : 1
+  n.pitchWet.gain.value = pitchOn ? p.pitchMix     : 0
 
   // ── Reverb ────────────────────────────────────────────────────────
   const reverbOn = !masterOff && p.reverbEnabled
@@ -453,7 +560,14 @@ function applyFxParams(n: FxNodes, p: FxParams, st: ApplyState): void {
   // LFO/noise pattern as the ring sweep, scaled into the user's
   // [low, high] range and offset to the midpoint.
   const pannerOn = !masterOff && p.pannerEnabled
-  const pannerSweepActive = pannerOn && p.pannerSweepRate > 0
+  // Resolve effective panner sweep rate from Hz/♪ mode (v0.3).
+  let effectivePannerSweepRate = p.pannerSweepRate
+  if (p.pannerSweepRateMode === "♪") {
+    const bpm = resolveEffectiveBpm()
+    const ms  = noteToMs(p.pannerSweepRateNote, bpm)
+    if (ms > 0) effectivePannerSweepRate = 1000 / ms
+  }
+  const pannerSweepActive = pannerOn && effectivePannerSweepRate > 0
   // Asymmetric spread: the sweep range is [-L, +R].  Midpoint
   // (where the pan parks when sweep is off) = (R - L) / 2.
   // Half-range (the LFO scaling) = (R + L) / 2.  When L=R=1 this
@@ -467,8 +581,8 @@ function applyFxParams(n: FxNodes, p: FxParams, st: ApplyState): void {
   if (pannerSweepActive) {
     n.pannerNode.pan.value       = pannerMid
     n.pannerRangeGain.gain.value = pannerHalfRange
-    n.pannerLFO.frequency.value  = p.pannerSweepRate
-    n.pannerNoiseFilter.frequency.value = Math.max(0.5, p.pannerSweepRate * 4)
+    n.pannerLFO.frequency.value  = effectivePannerSweepRate
+    n.pannerNoiseFilter.frequency.value = Math.max(0.5, effectivePannerSweepRate * 4)
   } else {
     // Sweep off — pan parks at the midpoint (still respects
     // asymmetric L/R weighting; L=1,R=0 parks at -0.5).
@@ -496,7 +610,7 @@ function applyFxParams(n: FxNodes, p: FxParams, st: ApplyState): void {
 
 // ── buildFxChain — full constructor for the audio graph ──────────────
 
-function buildFxChain(audioEl: HTMLMediaElement, initial: FxParams): FxNodes | null {
+async function buildFxChain(audioEl: HTMLMediaElement, initial: FxParams): Promise<FxNodes | null> {
   const Ctx = window.AudioContext ?? window.webkitAudioContext
   if (!Ctx) {
     // eslint-disable-next-line no-console
@@ -769,13 +883,62 @@ function buildFxChain(audioEl: HTMLMediaElement, initial: FxParams): FxNodes | n
   delayOut.connect(phaseDry)
   delayOut.connect(phaseAP[0])
 
-  // Phaser's last allpass to its wet gain; both phaser dry/wet feed
-  // into the reverb's dry side AND the convolver's input.
+  // Phaser's last allpass to its wet gain.
   phaseAP[phaseAP.length - 1].connect(phaseWet)
-  phaseDry.connect(reverbDry)
-  phaseWet.connect(reverbDry)
-  phaseDry.connect(reverb)
-  phaseWet.connect(reverb)
+
+  // ── Pitch shifter (SoundTouchJS, v0.3 Phase 4) ──────────────────
+  // Splice between phaser and reverb.  pitchSum collapses phaser
+  // dry+wet into one signal that fans out into dry + wet pitch
+  // paths.  The wet path goes through the SoundTouchNode if the
+  // AudioWorklet loaded successfully; otherwise wet is silent and
+  // only the dry path carries (graceful degradation when the
+  // worklet can't load).
+  const pitchSum = ctx.createGain()
+  pitchSum.gain.value = 1
+  phaseDry.connect(pitchSum)
+  phaseWet.connect(pitchSum)
+
+  const pitchDry = ctx.createGain()
+  const pitchWet = ctx.createGain()
+  const pitchOut = ctx.createGain()
+  pitchDry.gain.value = 1   // default fully dry until applyFxParams runs
+  pitchWet.gain.value = 0
+  pitchDry.connect(pitchOut)
+  pitchWet.connect(pitchOut)
+  pitchSum.connect(pitchDry)
+
+  let pitchWorklet: AudioWorkletNode | null = null
+  try {
+    await ensurePitchWorklet(ctx)
+    // Plain AudioWorkletNode pointing at our vendored phaze processor.
+    // numberOfInputs/Outputs default to 1; outputChannelCount = [2]
+    // forces stereo output so the downstream panner has two channels
+    // to position (without this, some browsers default to mono).
+    pitchWorklet = new AudioWorkletNode(ctx, "phase-vocoder-processor", {
+      numberOfInputs:     1,
+      numberOfOutputs:    1,
+      outputChannelCount: [2],
+    })
+    // Convert UI semitones (-24..+24, fractional via cents/100) to
+    // phaze's pitchFactor (frequency multiplier).
+    //   pitchFactor = 2^(semitones / 12)
+    //   -12 semitones → 0.5;  0 → 1.0;  +12 → 2.0
+    const initialSemitones = initial.pitchSemitones + initial.pitchCents / 100
+    const initialPitchFactor = Math.pow(2, initialSemitones / 12)
+    pitchWorklet.parameters.get("pitchFactor")!.value = initialPitchFactor
+    pitchSum.connect(pitchWorklet)
+    pitchWorklet.connect(pitchWet)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[fx] phaze phase-vocoder AudioWorklet failed to load — pitch is a no-op:", err)
+    pitchWorklet = null
+  }
+
+  // pitchOut feeds reverb's dry+wet pair, the same way the original
+  // phaser dry+wet did.  Routing into the convolver and the reverb
+  // dry-bus are both connections off pitchOut.
+  pitchOut.connect(reverbDry)
+  pitchOut.connect(reverb)
 
   // Reverb output flows into the panner stage (dry + wet split),
   // and the panner stage merges into the destination.  When the
@@ -820,6 +983,7 @@ function buildFxChain(audioEl: HTMLMediaElement, initial: FxParams): FxNodes | n
     delay, delayFb, delayDry, delayWet, delayOut,
     delayFbConnected: initialFbConnected,
     phaseAP, phaseLFO, phaseLFOGain, phaseDry, phaseWet,
+    pitchSum, pitchWorklet, pitchDry, pitchWet, pitchOut,
     reverb, reverbDry, reverbWet, reverbOut,
     pannerNode, pannerDry, pannerWet, pannerOut,
     pannerRangeGain, pannerLFO, pannerNoise, pannerNoiseFilter,
@@ -886,14 +1050,34 @@ export function useFxChain(audioEl: HTMLMediaElement | null): UseFxChainResult {
       }
     }
 
-    const nodes = buildFxChain(audioEl, useFxStore.getState().params)
-    if (nodes) {
-      nodesRef.current = nodes
-      // Apply current params immediately so the freshly-built chain
-      // honors any non-default values (e.g., user has saved presets
-      // with FX knobs at non-zero positions).
-      applyFxParams(nodes, useFxStore.getState().params, applyStateRef.current)
-    }
+    // buildFxChain is async now (v0.3 Phase 4 — awaits the SoundTouch
+    // AudioWorklet module).  Wrap in a cancellation guard so a quick
+    // element change can't have an in-flight build clobber a newer
+    // chain.
+    let cancelled = false
+    buildFxChain(audioEl, useFxStore.getState().params)
+      .then((nodes) => {
+        if (cancelled) {
+          // A newer build superseded us — close the orphan context so
+          // we don't leak its audio resources.
+          if (nodes) {
+            try { void nodes.ctx.close() } catch { /* ignore */ }
+          }
+          return
+        }
+        if (nodes) {
+          nodesRef.current = nodes
+          // Apply current params immediately so the freshly-built chain
+          // honors any non-default values (e.g., user has saved presets
+          // with FX knobs at non-zero positions).
+          applyFxParams(nodes, useFxStore.getState().params, applyStateRef.current)
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("[fx] chain build failed:", err)
+      })
+    return () => { cancelled = true }
   }, [audioEl])
 
   // ── Re-apply params on every store update ────────────────────────

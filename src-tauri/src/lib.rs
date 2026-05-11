@@ -177,15 +177,47 @@ fn quit_app(app: tauri::AppHandle) {
 #[derive(Default)]
 struct SidecarState(Mutex<Option<CommandChild>>);
 
-/// Try to kill the sidecar if it's running.  Idempotent — calling
-/// twice is fine (the second call sees None and exits silently).
+/// Dev-mode counterpart to SidecarState — the dev sidecar is spawned
+/// via std::process::Command (not Tauri's shell plugin), so its child
+/// handle is a std::process::Child, NOT a tauri CommandChild.  Lives
+/// in its own state slot so kill_sidecar can SIGTERM both on shutdown.
+///
+/// Why two slots instead of one unified one: the production path uses
+/// Tauri's shell plugin which carries its own event-stream plumbing
+/// (CommandEvent::Stdout / Stderr / Terminated etc.).  Refactoring
+/// that path to use std::process::Command would be a larger change
+/// than the dev convenience warrants.  Keeping them parallel means
+/// the production code is untouched and dev's lifecycle is additive.
+#[derive(Default)]
+struct DevSidecarState(Mutex<Option<std::process::Child>>);
+
+/// Try to kill BOTH possible sidecars (production CommandChild and
+/// dev std::process::Child).  Idempotent — calling twice is fine
+/// (the second call sees None and exits silently).  Both branches
+/// are checked so the same shutdown hook works in dev and production
+/// without conditional code.
 fn kill_sidecar(app: &tauri::AppHandle) {
+    // Production path — Tauri shell plugin's CommandChild.
     if let Some(state) = app.try_state::<SidecarState>() {
         if let Ok(mut guard) = state.0.lock() {
             if let Some(child) = guard.take() {
                 let pid = child.pid();
-                eprintln!("[slurmify-shell] killing sidecar pid={}", pid);
+                eprintln!("[slurmify-shell] killing prod sidecar pid={}", pid);
                 let _ = child.kill();
+            }
+        }
+    }
+    // Dev path — std::process::Child (from spawn_sidecar_dev below).
+    if let Some(state) = app.try_state::<DevSidecarState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(mut child) = guard.take() {
+                let pid = child.id();
+                eprintln!("[slurmify-shell] killing dev sidecar pid={}", pid);
+                let _ = child.kill();
+                // Reap zombie — child.wait() returns immediately after
+                // SIGKILL, but without it the Python process becomes a
+                // zombie until the parent process exits.  Cheap.
+                let _ = child.wait();
             }
         }
     }
@@ -291,6 +323,145 @@ struct SidecarReady {
     port:           u16,
 }
 
+/// Dev-mode sidecar auto-spawn.  Mirrors spawn_sidecar() above but
+/// runs `<repo>/src-python/.venv/bin/python <repo>/src-python/server.py`
+/// via std::process::Command instead of going through Tauri's shell
+/// plugin (which is gated by `shell:allow-spawn` for the bundled
+/// binary only).
+///
+/// Path resolution happens at compile time via `env!("CARGO_MANIFEST_DIR")`
+/// — that gives us the absolute path to src-tauri/, and ../src-python/
+/// is the dev sidecar source.  Compile-time embedding is fine because
+/// this function is only compiled into dev builds (`debug_assertions`).
+///
+/// Graceful fallback: if the venv interpreter or server.py is missing,
+/// we print a clear message and SKIP the spawn — the developer can
+/// still run `python src-python/server.py` manually in a second
+/// terminal, same workflow as before this auto-spawn existed.
+///
+/// Why a separate function (not just inline in setup()):
+///   • Keeps the setup() hook readable.
+///   • The dev path needs its own stdout-reader thread (using std lib
+///     channels) since we can't reuse the tauri-plugin-shell event
+///     stream.  Isolating the spawn + reader keeps the lifecycle
+///     contained.
+#[cfg(debug_assertions)]
+fn spawn_sidecar_dev(app: &tauri::AppHandle) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use std::path::PathBuf;
+    use std::process::Stdio;
+
+    // Resolve paths at compile time.  env! is evaluated by rustc, so
+    // these strings are baked into the binary; they remain valid as
+    // long as the repo isn't moved between `cargo build` and runtime
+    // (acceptable for dev).
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root    = manifest_dir.parent()
+        .ok_or_else(|| "[dev] CARGO_MANIFEST_DIR has no parent".to_string())?;
+    let venv_py      = repo_root.join("src-python").join(".venv").join("bin").join("python");
+    let server_py    = repo_root.join("src-python").join("server.py");
+
+    // Sanity checks — bail with a clear message before we try to
+    // spawn anything that won't work.
+    if !server_py.exists() {
+        return Err(format!(
+            "[dev] server.py not found at {}.  Did the repo layout change?",
+            server_py.display(),
+        ));
+    }
+
+    // Prefer the venv interpreter; fall back to system `python3` with
+    // a warning so the developer notices they don't have the standard
+    // src-python/.venv set up.
+    let py_path = if venv_py.exists() {
+        venv_py.clone()
+    } else {
+        eprintln!(
+            "[slurmify-shell] DEV: src-python/.venv not found.  Falling back to \
+             system python3.  Run\n    \
+             cd src-python && python3 -m venv .venv && \
+             .venv/bin/pip install -e \".[dev]\"\n\
+             to set it up properly."
+        );
+        PathBuf::from("python3")
+    };
+
+    // Spawn it.  inherit stderr so Python tracebacks land in the
+    // tauri-dev terminal; capture stdout so we can parse the
+    // slurmify_ready JSON line and log everything for diagnostics.
+    eprintln!(
+        "[slurmify-shell] DEV: spawning sidecar -> {} {}",
+        py_path.display(),
+        server_py.display(),
+    );
+    let mut child = std::process::Command::new(&py_path)
+        .arg(&server_py)
+        // Run with cwd at the repo root so any path lookups inside
+        // server.py that use relative paths resolve correctly.
+        .current_dir(repo_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!(
+            "[dev] failed to spawn {} {}: {}",
+            py_path.display(), server_py.display(), e,
+        ))?;
+
+    let pid = child.id();
+    eprintln!("[slurmify-shell] DEV: sidecar spawned, pid={}", pid);
+
+    // Take ownership of stdout for the reader thread.  Errors here
+    // would mean the child closed stdout immediately (rare); the
+    // child handle is still valid and will be killed on shutdown.
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "[dev] child has no stdout pipe".to_string())?;
+
+    // Stash the child handle so kill_sidecar() can SIGKILL it on app
+    // exit.  Doing this BEFORE spawning the reader thread means an
+    // immediate Cmd-Q after launch still cleans up.
+    if let Some(state) = app.try_state::<DevSidecarState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = Some(child);
+        }
+    }
+
+    // Background thread: read stdout line-by-line, parse the
+    // slurmify_ready JSON, log everything.  Same contract as the
+    // production rx loop above so log lines look identical.  Uses
+    // std::thread (not tauri::async_runtime::spawn) because we
+    // don't have an async context — we're using blocking BufReader
+    // on a std::process::ChildStdout.
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line_result in reader.lines() {
+            match line_result {
+                Ok(line) => {
+                    eprintln!("[sidecar/out] {}", line);
+                    if let Ok(parsed) =
+                        serde_json::from_str::<SidecarReady>(line.trim())
+                    {
+                        if parsed.slurmify_ready {
+                            eprintln!(
+                                "[slurmify-shell] DEV: backend ready on port {}",
+                                parsed.port,
+                            );
+                            let _ = app_handle.emit("backend-ready", parsed.port);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[sidecar/out] read error: {}", e);
+                    break;
+                }
+            }
+        }
+        eprintln!("[slurmify-shell] DEV: sidecar stdout closed");
+    });
+
+    Ok(())
+}
+
 // ── Tauri app entry ───────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -309,8 +480,14 @@ pub fn run() {
         // SidecarState holds the spawned Python process handle so
         // we can SIGTERM it from RunEvent::Exit AND from the
         // quit_app command.  Default is empty — populated when the
-        // setup hook spawns the sidecar.
+        // setup hook spawns the sidecar.  Production builds use
+        // SidecarState (Tauri shell plugin's CommandChild); dev
+        // builds use DevSidecarState (std::process::Child via the
+        // venv python — see spawn_sidecar_dev).  Both slots are
+        // registered unconditionally so kill_sidecar can check
+        // either path without conditional compilation.
         .manage(SidecarState::default())
+        .manage(DevSidecarState::default())
 
         // ── Custom commands ────────────────────────────────────────
         // Each function annotated with #[tauri::command] becomes
@@ -331,13 +508,38 @@ pub fn run() {
         //     in a separate terminal, and read_backend_discovery
         //     picks up the port via the discovery file.
         .setup(|app| {
+            // ── Dev builds: auto-spawn the venv Python sidecar ────
+            // Previously dev builds required the developer to run
+            // `python src-python/server.py` in a separate terminal.
+            // That was fine for backend-iteration sessions but
+            // friction for frontend-only work (forgetting the
+            // terminal = the upload UI says "network error" with no
+            // obvious cause).  spawn_sidecar_dev() now resolves the
+            // venv python at compile time and runs server.py via
+            // std::process::Command so the app is one-command-go
+            // for dev too.  If the venv or server.py is missing the
+            // function returns a clear error and we fall back to
+            // the old "run it manually" message.
             #[cfg(debug_assertions)]
             {
-                println!(
-                    "[slurmify-shell] Tauri 2 setup complete (debug). \
-                     Sidecar NOT auto-spawned — run \
-                     `python src-python/server.py` manually."
-                );
+                let handle = app.handle().clone();
+                match spawn_sidecar_dev(&handle) {
+                    Ok(())   => {
+                        println!(
+                            "[slurmify-shell] Tauri 2 setup complete (debug). \
+                             Sidecar auto-spawned via venv Python."
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[slurmify-shell] DEV auto-spawn failed: {}\n\
+                             [slurmify-shell] Falling back: run \
+                             `python src-python/server.py` manually \
+                             in a separate terminal.",
+                            err,
+                        );
+                    }
+                }
             }
 
             #[cfg(not(debug_assertions))]

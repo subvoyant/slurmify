@@ -1473,27 +1473,37 @@ function FxBody() {
               disabled={!fx.ringEnabled || masterBypassed}
               tooltip={<>Ring-mod blend amount.  <strong>0</strong> = passthrough.  <strong>1</strong> = full sine modulation of the gain envelope.</>}
             />
-            <LabeledKnob
+            {/* SWEEP — Hz ⇄ ♪ toggle added in v0.3 so the sweep rate
+                can lock to a note value at the current BPM (e.g.
+                "1/4" at 120 BPM = 2 Hz).  Pattern mirrors tremolo
+                rate's KnobNoteToggle wiring above.  The 0 = "sweep
+                off" semantics only apply in Hz mode; in ♪ mode the
+                resolved rate is always > 0, so toggle back to Hz
+                if you want to type 0 to turn the sweep off. */}
+            <KnobNoteToggle
               label="sweep"
-              value={fx.ringSweepRate}
-              onChange={(v) => setFxParam("ringSweepRate", v)}
-              min={0} max={20} step={0.05}
-              defaultValue={0}
-              formatValue={(v) =>
+              msValue={fx.ringSweepRate}
+              onMsChange={(v) => setFxParam("ringSweepRate", v)}
+              msMin={0} msMax={20} msStep={0.05}
+              msDefault={0}
+              noteValue={fx.ringSweepRateNote}
+              onNoteChange={(v: NoteLabel) => setFxParam("ringSweepRateNote", v)}
+              mode={fx.ringSweepRateMode}
+              onModeChange={(m) => setFxParam("ringSweepRateMode", m as "Hz" | "♪")}
+              valueMode="Hz"
+              valueUnit="Hz"
+              valueModeLabel="Hz"
+              valueFormat={(v) =>
                 v === 0      ? "off"
                 : v < 0.1    ? v.toFixed(3)
                 : v < 1      ? v.toFixed(2)
                 : v < 10     ? v.toFixed(2)
                 :              v.toFixed(1)
               }
-              unit="Hz"
-              disabled={!fx.ringEnabled || masterBypassed}
-              // 0.001–1 Hz spans 70 % of the knob travel; 1–20 Hz the
-              // remaining 30 %.  Both segments use a log curve so
-              // very slow sweeps (the most musically useful range)
-              // get fine resolution and aren't compressed into the
-              // first few degrees.  See Knob's valueToNorm comment
-              // for the mapper contract.
+              noteToValue={(note, bpm) => {
+                const ms = noteToMs(note, bpm)
+                return ms > 0 ? 1000 / ms : 0
+              }}
               valueToNorm={(v) => {
                 if (v <= 0)   return 0
                 if (v <= 1)   return 0.7 * (Math.log(Math.max(v, 0.001) / 0.001) / Math.log(1000))
@@ -1504,26 +1514,21 @@ function FxBody() {
                 if (n <= 0.7) return 0.001 * Math.pow(1000, n / 0.7)
                 return Math.pow(20, (n - 0.7) / 0.3)
               }}
-              // Graticule marks at the three musically meaningful
-              // points on the curve: 0 (off, knob fully CCW), 1 Hz
-              // (the 70 % crossover where the curve transitions from
-              // log-fine to log-coarse), and 20 Hz (top end, drawn
-              // as ∞ since 20 Hz feels effectively "audio-rate" — at
-              // that speed the carrier sounds like a continuous
-              // FM smear rather than a discrete sweep).
               markers={[
                 { value: 0,  label: "0" },
                 { value: 1,  label: "1" },
                 { value: 20, label: "∞" },
               ]}
+              disabled={!fx.ringEnabled || masterBypassed}
               tooltip={<>
-                LFO speed for the carrier-frequency sweep.
-                <strong> 0</strong> = sweep off (static FREQ applies).
+                LFO speed for the carrier-frequency sweep.  Toggle
+                <strong> Hz ⇄ ♪</strong> to lock to a note value at the
+                current BPM ("1/4" at 120 BPM = 2 Hz).
+                <strong> 0</strong> = sweep off (Hz mode only).
                 <strong> 0.001–1 Hz</strong> spans 70&nbsp;% of the knob
                 travel for fine slow-sweep control;
                 <strong> 1–20 Hz</strong> the remaining 30&nbsp;%.
-                Graticule marks at <strong>0 / 1 / ∞</strong>.  LFO
-                waveform set by the WAVE selector.
+                LFO waveform set by the WAVE selector.
               </>}
             />
             <LabeledKnob
@@ -1644,71 +1649,113 @@ function FxBody() {
         <FxPanelTitle name="time / space" />
         <div className="flex items-stretch gap-1 flex-wrap">
 
-          {/* DELAY (time control has ms ⇄ ♪ note-mode toggle) */}
+          {/* DELAY — Olympic-rings stack (v0.3 compression).
+              Top: TIME (left), FEEDBACK (right).
+              Bottom: MIX nested between them, pulled up via -mt-8 so
+              the rack stays the same height as PHASER's stacked
+              RATE+DEPTH.  Pattern mirrors the STUTTER olympic-stack
+              at App.tsx ~823 (which is documented inline there).
+              4-col grid; top knobs span cols 1-2 / 3-4; bottom knob
+              spans cols 2-3 (the midpoint gap). */}
           <FxSubSection
             name="delay"
             enabled={fx.delayEnabled}
             onToggle={() => setFxParam("delayEnabled", !fx.delayEnabled)}
             weight={3}
           >
-            <KnobNoteToggle
-              label="time"
-              msValue={fx.delayTime * 1000}
-              onMsChange={(v) => setFxParam("delayTime", v / 1000)}
-              msMin={0} msMax={2000} msStep={1}
-              msDefault={300}
-              noteValue={fx.delayTimeNote}
-              onNoteChange={(v: NoteLabel) => setFxParam("delayTimeNote", v)}
-              mode={fx.delayTimeMode}
-              onModeChange={(m) => setFxParam("delayTimeMode", m as "ms" | "♪")}
-              disabled={!fx.delayEnabled || masterBypassed}
-              tooltip={<>
-                Delay time, 0–2000 ms.  Toggle <strong>ms ⇄ ♪</strong> to lock the delay to the detected BPM (e.g. 1/8 = eighth-note delay at the current tempo).  In note mode the value re-syncs whenever the BPM override or auto-detection changes.
-              </>}
-            />
-            <LabeledKnob
-              label="feedback"
-              value={fx.delayFb}
-              onChange={(v) => setFxParam("delayFb", v)}
-              min={0} max={0.95} step={0.01}
-              defaultValue={0.35}
-              formatValue={(v) => v.toFixed(2)}
-              showDefaultMark
-              disabled={!fx.delayEnabled || masterBypassed}
-              tooltip={<>Delay feedback.  <strong>0</strong> = single repeat (loop disconnected).  <strong>0.5</strong> ≈ 6 echoes.  <strong>0.9+</strong> = drone.  Capped at 0.95 to prevent runaway.  Default tick at 0.35.</>}
-            />
-            <LabeledKnob
-              label="mix"
-              value={fx.delayMix}
-              onChange={(v) => setFxParam("delayMix", v)}
-              min={0} max={1} step={0.01}
-              defaultValue={0}
-              formatValue={(v) => v.toFixed(2)}
-              showDefaultMark
-              disabled={!fx.delayEnabled || masterBypassed}
-              tooltip={<>Wet/dry blend.  <strong>0</strong> = bypass.  <strong>0.5</strong> = equal.  <strong>1</strong> = wet only.</>}
-            />
+            <div className="grid grid-cols-4 grid-rows-2 gap-y-0 pt-1 place-items-center w-full">
+              <div className="row-start-1 col-start-1 col-span-2 flex justify-center">
+                <KnobNoteToggle
+                  label="time"
+                  msValue={fx.delayTime * 1000}
+                  onMsChange={(v) => setFxParam("delayTime", v / 1000)}
+                  msMin={0} msMax={2000} msStep={1}
+                  msDefault={300}
+                  noteValue={fx.delayTimeNote}
+                  onNoteChange={(v: NoteLabel) => setFxParam("delayTimeNote", v)}
+                  mode={fx.delayTimeMode}
+                  onModeChange={(m) => setFxParam("delayTimeMode", m as "ms" | "♪")}
+                  disabled={!fx.delayEnabled || masterBypassed}
+                  tooltip={<>
+                    Delay time, 0–2000 ms.  Toggle <strong>ms ⇄ ♪</strong> to lock the delay to the detected BPM (e.g. 1/8 = eighth-note delay at the current tempo).  In note mode the value re-syncs whenever the BPM override or auto-detection changes.
+                  </>}
+                />
+              </div>
+              <div className="row-start-1 col-start-3 col-span-2 flex justify-center">
+                <LabeledKnob
+                  label="feedback"
+                  value={fx.delayFb}
+                  onChange={(v) => setFxParam("delayFb", v)}
+                  min={0} max={0.95} step={0.01}
+                  defaultValue={0.35}
+                  formatValue={(v) => v.toFixed(2)}
+                  showDefaultMark
+                  disabled={!fx.delayEnabled || masterBypassed}
+                  tooltip={<>Delay feedback.  <strong>0</strong> = single repeat (loop disconnected).  <strong>0.5</strong> ≈ 6 echoes.  <strong>0.9+</strong> = drone.  Capped at 0.95 to prevent runaway.  Default tick at 0.35.</>}
+                />
+              </div>
+              <div className="row-start-2 col-start-2 col-span-2 flex justify-center -mt-8">
+                <LabeledKnob
+                  label="mix"
+                  value={fx.delayMix}
+                  onChange={(v) => setFxParam("delayMix", v)}
+                  min={0} max={1} step={0.01}
+                  defaultValue={0}
+                  formatValue={(v) => v.toFixed(2)}
+                  showDefaultMark
+                  disabled={!fx.delayEnabled || masterBypassed}
+                  tooltip={<>Wet/dry blend.  <strong>0</strong> = bypass.  <strong>0.5</strong> = equal.  <strong>1</strong> = wet only.</>}
+                />
+              </div>
+            </div>
           </FxSubSection>
 
           <FxRule />
 
-          {/* PHASER */}
+          {/* PHASER — weight dropped 2→1 in v0.3 layout pass.  The
+              rack only holds RATE + DEPTH (already vertically
+              stacked), so a single-knob-width column is plenty.
+              Borrowed width goes to PANNER (3→4) so PANNER's WAVE
+              selector fits within its own panel border instead of
+              spilling into the PITCH column. */}
           <FxSubSection
             name="phaser"
             enabled={fx.phaserEnabled}
             onToggle={() => setFxParam("phaserEnabled", !fx.phaserEnabled)}
-            weight={2}
+            weight={1}
           >
-            <LabeledKnob
+            {/* Wrap RATE + DEPTH in a flex-col with items-center so the
+                two stacked knobs are horizontally centered in the
+                narrow weight=1 column.  Without this they left-align
+                against FxSubSection's flex-wrap default. */}
+            <div className="flex flex-col items-center gap-2 w-full">
+            {/* RATE — Hz ⇄ ♪ toggle added in v0.3 (PLAN_FX_RACK_V0.3). */}
+            <KnobNoteToggle
               label="rate"
-              value={fx.phaseRate}
-              onChange={(v) => setFxParam("phaseRate", v)}
-              min={0.05} max={10} step={0.05}
-              defaultValue={1.0}
-              formatValue={(v) => v.toFixed(2)}
-              unit="Hz"
+              msValue={fx.phaseRate}
+              onMsChange={(v) => setFxParam("phaseRate", v)}
+              msMin={0.05} msMax={10} msStep={0.05}
+              msDefault={1.0}
+              noteValue={fx.phaseRateNote}
+              onNoteChange={(v: NoteLabel) => setFxParam("phaseRateNote", v)}
+              mode={fx.phaseRateMode}
+              onModeChange={(m) => setFxParam("phaseRateMode", m as "Hz" | "♪")}
+              valueMode="Hz"
+              valueUnit="Hz"
+              valueModeLabel="Hz"
+              valueFormat={(v) => v.toFixed(2)}
+              noteToValue={(note, bpm) => {
+                const ms = noteToMs(note, bpm)
+                return ms > 0 ? 1000 / ms : 0
+              }}
               disabled={!fx.phaserEnabled || masterBypassed}
-              tooltip={<>LFO sweep rate.  <strong>0.05-0.5</strong> = cosmic sweep.  <strong>1-3</strong> = classic phaser.  <strong>5+</strong> = throbbing.</>}
+              tooltip={<>
+                Phaser LFO rate.  Toggle <strong>Hz ⇄ ♪</strong> to
+                lock to a note value at the current BPM.
+                <strong> 0.05-0.5</strong> = cosmic sweep.
+                <strong> 1-3</strong> = classic phaser.
+                <strong> 5+</strong> = throbbing.
+              </>}
             />
             <LabeledKnob
               label="depth"
@@ -1721,6 +1768,7 @@ function FxBody() {
               disabled={!fx.phaserEnabled || masterBypassed}
               tooltip={<>Phaser intensity — controls LFO sweep range AND wet/dry mix.  <strong>0</strong> = bypass.  <strong>1</strong> = full.</>}
             />
+            </div>
           </FxSubSection>
 
           <FxRule />
@@ -1731,175 +1779,307 @@ function FxBody() {
               carrier frequency.  Sits POST-reverb so the panner
               moves the entire processed signal in the stereo
               field. */}
+          {/* PANNER — Layout B (v0.3 compression).
+              2x2 knob grid (MIX/SWEEP top, L/R bottom) on the left,
+              WAVE selector spanning both rows on the right.  Weight
+              bumped 3→4 after the first round revealed WAVE was
+              spilling past the right edge of the panner panel into
+              the PITCH column — borrowed width comes from PHASER
+              (2→1) which has only two narrow stacked knobs. */}
           <FxSubSection
             name="panner"
             enabled={fx.pannerEnabled}
             onToggle={() => setFxParam("pannerEnabled", !fx.pannerEnabled)}
-            weight={5}
+            weight={4}
           >
-            <LabeledKnob
-              label="mix"
-              value={fx.pannerMix}
-              onChange={(v) => setFxParam("pannerMix", v)}
-              min={0} max={1} step={0.01}
-              defaultValue={0}
-              formatValue={(v) => v.toFixed(2)}
-              showDefaultMark
-              disabled={!fx.pannerEnabled || masterBypassed}
-              tooltip={<>
-                Wet/dry blend.  <strong>0</strong> = bypass (signal
-                stays centered).  <strong>0.5</strong> = halfway
-                between centered and full pan.  <strong>1</strong>
-                = full pan effect.
-              </>}
-            />
-            <LabeledKnob
-              label="sweep"
-              value={fx.pannerSweepRate}
-              onChange={(v) => setFxParam("pannerSweepRate", v)}
-              min={0} max={20} step={0.05}
-              defaultValue={0.5}
-              formatValue={(v) =>
-                v === 0      ? "off"
-                : v < 0.1    ? v.toFixed(3)
-                : v < 1      ? v.toFixed(2)
-                : v < 10     ? v.toFixed(2)
-                :              v.toFixed(1)
-              }
-              unit="Hz"
-              disabled={!fx.pannerEnabled || masterBypassed}
-              // Same 70/30 log taper as the ring sweep — slow rates
-              // (the most musically useful range for auto-pan) get
-              // most of the knob travel.
-              valueToNorm={(v) => {
-                if (v <= 0)   return 0
-                if (v <= 1)   return 0.7 * (Math.log(Math.max(v, 0.001) / 0.001) / Math.log(1000))
-                return 0.7 + 0.3 * (Math.log(v) / Math.log(20))
-              }}
-              normToValue={(n) => {
-                if (n <= 0)   return 0
-                if (n <= 0.7) return 0.001 * Math.pow(1000, n / 0.7)
-                return Math.pow(20, (n - 0.7) / 0.3)
-              }}
-              markers={[
-                { value: 0,  label: "0" },
-                { value: 1,  label: "1" },
-                { value: 20, label: "∞" },
-              ]}
-              tooltip={<>
-                Pan-sweep rate in Hz. <strong>0</strong> = sweep off
-                (pan parks at the midpoint of low/high).
-                <strong> 0.001–1 Hz</strong> spans 70% of knob travel
-                for slow auto-pan; <strong>1–20 Hz</strong> the
-                remaining 30%.  At 20 Hz the panning is at audio rate
-                — borderline ring-mod-of-pan territory.
-              </>}
-            />
-            <LabeledKnob
-              label="L"
-              value={fx.pannerSpreadL}
-              onChange={(v) => setFxParam("pannerSpreadL", v)}
-              min={0} max={1} step={0.01}
-              defaultValue={1}
-              formatValue={(v) =>
-                v === 0 ? "C"
-                : v === 1 ? "L"
-                : `L${v.toFixed(2)}`
-              }
-              showDefaultMark
-              // Invert the visual mapping: high value (= more left
-              // spread) renders the indicator pointing LEFT (CCW),
-              // low value renders pointing RIGHT (CW toward center).
-              // Without this inversion the L knob "increases to the
-              // right" which is cognitively dissonant for a control
-              // that reaches further LEFT as it grows.  Pairs with
-              // the R knob's natural "increases to the right"
-              // behavior so at default both indicators point AWAY
-              // from center, and at 0 both point TOWARD center.
-              valueToNorm={(v) => 1 - Math.max(0, Math.min(1, v))}
-              normToValue={(n) => 1 - Math.max(0, Math.min(1, n))}
-              invertArc
-              disabled={!fx.pannerEnabled || masterBypassed}
-              tooltip={<>
-                Spread to the LEFT — how far the pan reaches from
-                center toward full L.  <strong>0</strong> = pan
-                never crosses center to the left (right-side or
-                center-only sweep).  <strong>1</strong> = full L
-                reach (-1).  Combine with R for asymmetric sweeps
-                (e.g., L=0.3, R=1 keeps movement biased toward the
-                right channel).  Knob is inverted so the indicator
-                points LEFT when reaching far left.
-              </>}
-            />
-            <LabeledKnob
-              label="R"
-              value={fx.pannerSpreadR}
-              onChange={(v) => setFxParam("pannerSpreadR", v)}
-              min={0} max={1} step={0.01}
-              defaultValue={1}
-              formatValue={(v) =>
-                v === 0 ? "C"
-                : v === 1 ? "R"
-                : `R${v.toFixed(2)}`
-              }
-              showDefaultMark
-              disabled={!fx.pannerEnabled || masterBypassed}
-              tooltip={<>
-                Spread to the RIGHT — mirror of L.  <strong>0</strong>
-                = pan never crosses center to the right.
-                <strong> 1</strong> = full R reach (+1).
-                When L and R differ, the sweep is asymmetric and
-                its midpoint shifts to (R-L)/2.
-              </>}
-            />
-            <FxWaveSelector
-              value={fx.pannerSweepWave}
-              onChange={(v) => setFxParam("pannerSweepWave", v)}
-              disabled={!fx.pannerEnabled || masterBypassed}
-            />
+            {/* items-end vertically aligns the WAVE selector with the
+                BOTTOM of the 2×2 knob grid (instead of items-start
+                which top-aligned it).  Reads more balanced — the
+                selector reaches down to the L/R row's baseline
+                instead of floating up near the rack header. */}
+            <div className="flex items-end gap-2 w-full">
+              {/* Left half: 2×2 knob grid — MIX/SWEEP top, L/R bottom. */}
+              <div className="flex flex-col gap-1">
+                <div className="flex gap-1">
+                  <LabeledKnob
+                    label="mix"
+                    value={fx.pannerMix}
+                    onChange={(v) => setFxParam("pannerMix", v)}
+                    min={0} max={1} step={0.01}
+                    defaultValue={0}
+                    formatValue={(v) => v.toFixed(2)}
+                    showDefaultMark
+                    disabled={!fx.pannerEnabled || masterBypassed}
+                    tooltip={<>
+                      Wet/dry blend.  <strong>0</strong> = bypass (signal
+                      stays centered).  <strong>0.5</strong> = halfway
+                      between centered and full pan.  <strong>1</strong>
+                      = full pan effect.
+                    </>}
+                  />
+                  {/* SWEEP — Hz ⇄ ♪ toggle added in v0.3 so the pan
+                      sweep can lock to a note value at the current
+                      BPM.  Pattern mirrors the ring-sweep
+                      KnobNoteToggle. */}
+                  <KnobNoteToggle
+                    label="sweep"
+                    msValue={fx.pannerSweepRate}
+                    onMsChange={(v) => setFxParam("pannerSweepRate", v)}
+                    msMin={0} msMax={20} msStep={0.05}
+                    msDefault={0.5}
+                    noteValue={fx.pannerSweepRateNote}
+                    onNoteChange={(v: NoteLabel) => setFxParam("pannerSweepRateNote", v)}
+                    mode={fx.pannerSweepRateMode}
+                    onModeChange={(m) => setFxParam("pannerSweepRateMode", m as "Hz" | "♪")}
+                    valueMode="Hz"
+                    valueUnit="Hz"
+                    valueModeLabel="Hz"
+                    valueFormat={(v) =>
+                      v === 0      ? "off"
+                      : v < 0.1    ? v.toFixed(3)
+                      : v < 1      ? v.toFixed(2)
+                      : v < 10     ? v.toFixed(2)
+                      :              v.toFixed(1)
+                    }
+                    noteToValue={(note, bpm) => {
+                      const ms = noteToMs(note, bpm)
+                      return ms > 0 ? 1000 / ms : 0
+                    }}
+                    valueToNorm={(v) => {
+                      if (v <= 0)   return 0
+                      if (v <= 1)   return 0.7 * (Math.log(Math.max(v, 0.001) / 0.001) / Math.log(1000))
+                      return 0.7 + 0.3 * (Math.log(v) / Math.log(20))
+                    }}
+                    normToValue={(n) => {
+                      if (n <= 0)   return 0
+                      if (n <= 0.7) return 0.001 * Math.pow(1000, n / 0.7)
+                      return Math.pow(20, (n - 0.7) / 0.3)
+                    }}
+                    markers={[
+                      { value: 0,  label: "0" },
+                      { value: 1,  label: "1" },
+                      { value: 20, label: "∞" },
+                    ]}
+                    disabled={!fx.pannerEnabled || masterBypassed}
+                    tooltip={<>
+                      Pan-sweep rate.  Toggle <strong>Hz ⇄ ♪</strong> to lock
+                      to a note value at the current BPM.
+                      <strong> 0</strong> = sweep off (Hz mode only; pan parks
+                      at the midpoint).
+                      <strong> 0.001–1 Hz</strong> spans 70% of knob travel
+                      for slow auto-pan; <strong>1–20 Hz</strong> the
+                      remaining 30%.  At 20 Hz the panning is at audio rate
+                      — borderline ring-mod-of-pan territory.
+                    </>}
+                  />
+                </div>
+                <div className="flex gap-1">
+                  <LabeledKnob
+                    label="L"
+                    value={fx.pannerSpreadL}
+                    onChange={(v) => setFxParam("pannerSpreadL", v)}
+                    min={0} max={1} step={0.01}
+                    defaultValue={1}
+                    formatValue={(v) =>
+                      v === 0 ? "C"
+                      : v === 1 ? "L"
+                      : `L${v.toFixed(2)}`
+                    }
+                    showDefaultMark
+                    // Invert the visual mapping: high value (= more
+                    // left spread) renders the indicator pointing
+                    // LEFT (CCW), low value renders pointing RIGHT
+                    // (CW toward center).  Without this inversion
+                    // the L knob "increases to the right" which is
+                    // cognitively dissonant for a control that
+                    // reaches further LEFT as it grows.  Pairs with
+                    // the R knob's natural "increases to the right"
+                    // behavior so at default both indicators point
+                    // AWAY from center, and at 0 both point TOWARD
+                    // center.
+                    valueToNorm={(v) => 1 - Math.max(0, Math.min(1, v))}
+                    normToValue={(n) => 1 - Math.max(0, Math.min(1, n))}
+                    invertArc
+                    disabled={!fx.pannerEnabled || masterBypassed}
+                    tooltip={<>
+                      Spread to the LEFT — how far the pan reaches from
+                      center toward full L.  <strong>0</strong> = pan
+                      never crosses center to the left (right-side or
+                      center-only sweep).  <strong>1</strong> = full L
+                      reach (-1).  Combine with R for asymmetric sweeps
+                      (e.g., L=0.3, R=1 keeps movement biased toward the
+                      right channel).  Knob is inverted so the indicator
+                      points LEFT when reaching far left.
+                    </>}
+                  />
+                  <LabeledKnob
+                    label="R"
+                    value={fx.pannerSpreadR}
+                    onChange={(v) => setFxParam("pannerSpreadR", v)}
+                    min={0} max={1} step={0.01}
+                    defaultValue={1}
+                    formatValue={(v) =>
+                      v === 0 ? "C"
+                      : v === 1 ? "R"
+                      : `R${v.toFixed(2)}`
+                    }
+                    showDefaultMark
+                    disabled={!fx.pannerEnabled || masterBypassed}
+                    tooltip={<>
+                      Spread to the RIGHT — mirror of L.  <strong>0</strong>
+                      = pan never crosses center to the right.
+                      <strong> 1</strong> = full R reach (+1).
+                      When L and R differ, the sweep is asymmetric and
+                      its midpoint shifts to (R-L)/2.
+                    </>}
+                  />
+                </div>
+              </div>
+              {/* Right: WAVE selector spans both rows naturally
+                  (it's a vertical button stack already). */}
+              <FxWaveSelector
+                value={fx.pannerSweepWave}
+                onChange={(v) => setFxParam("pannerSweepWave", v)}
+                disabled={!fx.pannerEnabled || masterBypassed}
+              />
+            </div>
           </FxSubSection>
 
           <FxRule />
 
-          {/* REVERB */}
+          {/* PITCH — v0.3 Phase 4.  Olympic-rings stagger (same
+              pattern as DELAY / REVERB): SEMITONES top-left, CENTS
+              top-right, MIX nested below.  Live preview uses the
+              vendored phaze phase-vocoder AudioWorklet
+              (src/audio-worklets/phase-vocoder-processor.js, see
+              useFxChain.ts).  Burn-fx uses pyrubberband
+              (slurmcore._fx_pitch) for offline quality.  We switched
+              away from SoundTouchJS WSOLA in v0.3 polish because its
+              ~35-45 ms perceived latency felt laggy; phaze achieves
+              ~20 ms total, comfortably under the human-perception
+              threshold. */}
+          <FxSubSection
+            name="pitch"
+            enabled={fx.pitchEnabled}
+            onToggle={() => setFxParam("pitchEnabled", !fx.pitchEnabled)}
+            weight={3}
+          >
+            <div className="grid grid-cols-4 grid-rows-2 gap-y-0 pt-1 place-items-center w-full">
+              <div className="row-start-1 col-start-1 col-span-2 flex justify-center">
+                <LabeledKnob
+                  label="semitones"
+                  value={fx.pitchSemitones}
+                  onChange={(v) => setFxParam("pitchSemitones", v)}
+                  min={-24} max={24} step={1}
+                  defaultValue={0}
+                  formatValue={(v) => (v > 0 ? `+${v.toFixed(0)}` : v.toFixed(0))}
+                  showDefaultMark
+                  disabled={!fx.pitchEnabled || masterBypassed}
+                  tooltip={<>
+                    Coarse pitch shift in semitones.  <strong>−24 to +24</strong>
+                    spans two octaves each way.  Pairs with the CENTS
+                    knob for fine sub-semitone precision (cents/100
+                    added to semitones internally).  Live preview uses
+                    the phaze phase-vocoder AudioWorklet for
+                    sub-20 ms latency; burn-fx uses pyrubberband
+                    server-side for higher-quality offline render.
+                  </>}
+                />
+              </div>
+              <div className="row-start-1 col-start-3 col-span-2 flex justify-center">
+                <LabeledKnob
+                  label="cents"
+                  value={fx.pitchCents}
+                  onChange={(v) => setFxParam("pitchCents", v)}
+                  min={-100} max={100} step={1}
+                  defaultValue={0}
+                  formatValue={(v) => (v > 0 ? `+${v.toFixed(0)}` : v.toFixed(0))}
+                  showDefaultMark
+                  disabled={!fx.pitchEnabled || masterBypassed}
+                  tooltip={<>
+                    Fine pitch shift in cents.  <strong>1 cent = 1/100
+                    semitone</strong>.  Use this for sub-semitone
+                    detune; pairs with SEMITONES for the full range.
+                    <strong> ±5–10 cents</strong> at low mix = unison
+                    detune doubler trick.
+                  </>}
+                />
+              </div>
+              <div className="row-start-2 col-start-2 col-span-2 flex justify-center -mt-8">
+                <LabeledKnob
+                  label="mix"
+                  value={fx.pitchMix}
+                  onChange={(v) => setFxParam("pitchMix", v)}
+                  min={0} max={1} step={0.01}
+                  defaultValue={1.0}
+                  formatValue={(v) => v.toFixed(2)}
+                  showDefaultMark
+                  disabled={!fx.pitchEnabled || masterBypassed}
+                  tooltip={<>
+                    Wet/dry blend.  <strong>0</strong> = bypass (dry
+                    signal only).  <strong>1</strong> = fully pitched
+                    (default).  Values between blend the pitched signal
+                    with the original — small offsets at mix ≈ 0.3 give
+                    doubler / chorus-like thickness.
+                  </>}
+                />
+              </div>
+            </div>
+          </FxSubSection>
+
+          <FxRule />
+
+          {/* REVERB — Olympic-rings stack (v0.3 compression).
+              Top: SIZE (left), DECAY (right).
+              Bottom: MIX nested between them, pulled up via -mt-8.
+              Same 4-col grid pattern as DELAY (and the canonical
+              STUTTER stack at App.tsx ~823). */}
           <FxSubSection
             name="reverb"
             enabled={fx.reverbEnabled}
             onToggle={() => setFxParam("reverbEnabled", !fx.reverbEnabled)}
             weight={3}
           >
-            <LabeledKnob
-              label="size"
-              value={fx.reverbSize}
-              onChange={(v) => setFxParam("reverbSize", v)}
-              min={0.1} max={5} step={0.05}
-              defaultValue={1.5}
-              formatValue={(v) => v.toFixed(2)}
-              unit="s"
-              disabled={!fx.reverbEnabled || masterBypassed}
-              tooltip={<>Reverb tail length.  <strong>0.1-0.5</strong> = booth.  <strong>1-2</strong> = small room.  <strong>3+</strong> = hall / cathedral.</>}
-            />
-            <LabeledKnob
-              label="decay"
-              value={fx.reverbDecay}
-              onChange={(v) => setFxParam("reverbDecay", v)}
-              min={1} max={6} step={0.1}
-              defaultValue={2.5}
-              formatValue={(v) => v.toFixed(1)}
-              disabled={!fx.reverbEnabled || masterBypassed}
-              tooltip={<>Decay shape exponent.  <strong>1</strong> = linear.  <strong>2-3</strong> = natural room.  <strong>5-6</strong> = bunker.</>}
-            />
-            <LabeledKnob
-              label="mix"
-              value={fx.reverbMix}
-              onChange={(v) => setFxParam("reverbMix", v)}
-              min={0} max={1} step={0.01}
-              defaultValue={0}
-              formatValue={(v) => v.toFixed(2)}
-              showDefaultMark
-              disabled={!fx.reverbEnabled || masterBypassed}
-              tooltip={<>Reverb wet/dry mix.  <strong>0</strong> = bypass.  <strong>1</strong> = wet only.</>}
-            />
+            <div className="grid grid-cols-4 grid-rows-2 gap-y-0 pt-1 place-items-center w-full">
+              <div className="row-start-1 col-start-1 col-span-2 flex justify-center">
+                <LabeledKnob
+                  label="size"
+                  value={fx.reverbSize}
+                  onChange={(v) => setFxParam("reverbSize", v)}
+                  min={0.1} max={5} step={0.05}
+                  defaultValue={1.5}
+                  formatValue={(v) => v.toFixed(2)}
+                  unit="s"
+                  disabled={!fx.reverbEnabled || masterBypassed}
+                  tooltip={<>Reverb tail length.  <strong>0.1-0.5</strong> = booth.  <strong>1-2</strong> = small room.  <strong>3+</strong> = hall / cathedral.</>}
+                />
+              </div>
+              <div className="row-start-1 col-start-3 col-span-2 flex justify-center">
+                <LabeledKnob
+                  label="decay"
+                  value={fx.reverbDecay}
+                  onChange={(v) => setFxParam("reverbDecay", v)}
+                  min={1} max={6} step={0.1}
+                  defaultValue={2.5}
+                  formatValue={(v) => v.toFixed(1)}
+                  disabled={!fx.reverbEnabled || masterBypassed}
+                  tooltip={<>Decay shape exponent.  <strong>1</strong> = linear.  <strong>2-3</strong> = natural room.  <strong>5-6</strong> = bunker.</>}
+                />
+              </div>
+              <div className="row-start-2 col-start-2 col-span-2 flex justify-center -mt-8">
+                <LabeledKnob
+                  label="mix"
+                  value={fx.reverbMix}
+                  onChange={(v) => setFxParam("reverbMix", v)}
+                  min={0} max={1} step={0.01}
+                  defaultValue={0}
+                  formatValue={(v) => v.toFixed(2)}
+                  showDefaultMark
+                  disabled={!fx.reverbEnabled || masterBypassed}
+                  tooltip={<>Reverb wet/dry mix.  <strong>0</strong> = bypass.  <strong>1</strong> = wet only.</>}
+                />
+              </div>
+            </div>
           </FxSubSection>
 
         </div>
@@ -2195,7 +2375,11 @@ function FxShapeSelector({
       disabled && "opacity-50",
     )}>
       <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
-      <div className="flex h-14 flex-col gap-0.5 items-stretch w-full px-1">
+      {/* h-14 → h-24 in v0.3 polish — same overlap fix as
+          FxWaveSelector.  4 buttons at 56px gave ~12px per button,
+          which clipped the 9px label against the bottom "SHAPE"
+          panel-label.  96px gives ~21px per button, plenty. */}
+      <div className="flex h-24 flex-col gap-0.5 items-stretch w-full px-1">
         {shapes.map((s) => {
           const active = value === s.value
           return (
@@ -2244,13 +2428,20 @@ function FxWaveSelector({
   // Same value-on-top → buttons → label-on-bottom order as
   // FxShapeSelector — see that comment for the reasoning.  Keeps the
   // two selectors visually consistent across the FX rack.
+  //
+  // Button stack height bumped h-14 (56px) → h-24 (96px) in v0.3 polish
+  // because four buttons at 56px shared between them gave each only
+  // ~12px of vertical space — the text-[9px] labels were clipping
+  // against the button border and the bottom "WAVE" label appeared
+  // to overlap with the NSE button.  96px gives ~21px per button,
+  // plenty of room for the 9px text plus border padding.
   return (
     <div className={cn(
       "flex w-[76px] shrink-0 flex-col items-center gap-1 select-none",
       disabled && "opacity-50",
     )}>
       <div className="lcd text-[11px] text-slurm-fg uppercase">{value}</div>
-      <div className="flex h-14 flex-col gap-0.5 items-stretch w-full px-1">
+      <div className="flex h-24 flex-col gap-0.5 items-stretch w-full px-1">
         {waves.map((w) => {
           const active = value === w.value
           return (

@@ -99,6 +99,15 @@ export interface FxParams {
    *  rate (overriding the static ringFreq).  0 = sweep off, static
    *  freq applies. */
   ringSweepRate: number
+  /** Rate-mode toggle.  "Hz" = use ringSweepRate as-is.  "♪" =
+   *  compute Hz from ringSweepRateNote at the current effective BPM
+   *  (e.g. "1/4" at 120 BPM = 2 Hz).  Mirrors the tremoloRateMode /
+   *  delayTimeMode pattern; same note→Hz formula
+   *  (`1000 / noteToMs(note, bpm)`).  Added in v0.3 (PLAN_FX_RACK_V0.3.md). */
+  ringSweepRateMode: "Hz" | "♪"
+  /** Note fraction string used when ringSweepRateMode is "♪".  Same
+   *  grammar as src/lib/note-mode.ts. */
+  ringSweepRateNote: string
   /** Bottom cutoff of the sweep range in Hz.  Carrier won't go
    *  below this when sweep is active. */
   ringSweepLow: number
@@ -143,6 +152,12 @@ export interface FxParams {
   /** Sweep LFO speed in Hz.  When 0, panner sits at center without
    *  movement (or at the spread midpoint, which is also center). */
   pannerSweepRate: number
+  /** Rate-mode toggle.  "Hz" = use pannerSweepRate as-is.  "♪" =
+   *  compute Hz from pannerSweepRateNote at the current effective
+   *  BPM.  Mirrors the tremoloRateMode pattern.  Added in v0.3. */
+  pannerSweepRateMode: "Hz" | "♪"
+  /** Note fraction used when pannerSweepRateMode is "♪". */
+  pannerSweepRateNote: string
   /** Spread to the LEFT, 0–1.  Controls how far the pan sweeps
    *  from center toward full left.  At 0 the carrier never goes
    *  left of center; at 1 it reaches full L (-1).  Decoupled from
@@ -184,9 +199,33 @@ export interface FxParams {
   phaserEnabled: boolean
   /** LFO rate in Hz.  0.05 = slow sweep (~20 s).  5+ = throbbing. */
   phaseRate: number
+  /** Rate-mode toggle.  "Hz" = use phaseRate as-is.  "♪" =
+   *  compute Hz from phaseRateNote at the current effective BPM.
+   *  Mirrors the tremoloRateMode pattern.  Added in v0.3. */
+  phaseRateMode: "Hz" | "♪"
+  /** Note fraction used when phaseRateMode is "♪". */
+  phaseRateNote: string
   /** Phaser depth.  0 = bypass.  1 = full sweep + balanced wet/dry
    *  (matches v0.1.6's 0.5/0.5 mix when depth=1). */
   phaseDepth: number
+
+  // ── Pitch shifter (pyrubberband on the Python side; Web Audio
+  //     live preview pending v0.3.1 AudioWorklet phase-vocoder) ──
+  /** Per-effect bypass switch. */
+  pitchEnabled: boolean
+  /** Coarse pitch shift in semitones.  -24 to +24 (two octaves
+   *  each way).  Combined with pitchCents (cents/100) before the
+   *  burn-fx payload is built — the Python schema accepts a single
+   *  combined semitones float. */
+  pitchSemitones: number
+  /** Fine pitch shift in cents.  -100 to +100.  Pairs with
+   *  pitchSemitones for sub-semitone precision (musicians-who-care
+   *  use this for unison detune doubler effects at small mix). */
+  pitchCents: number
+  /** Wet/dry blend, 0–1.  Default 1.0 = fully pitched signal;
+   *  intermediate values blend with the dry input for doubler
+   *  effects (small semitones offset + mix=0.3 ≈ "thicker" sound). */
+  pitchMix: number
 
   // ── Reverb (ConvolverNode with generated IR) ─────────────────────
   /** Per-effect bypass switch. */
@@ -212,13 +251,15 @@ export const defaultFxParams = (): FxParams => ({
   distShape:      "soft",
   distTone:       0,
 
-  ringEnabled:    true,
-  ringFreq:       200,
-  ringDepth:      0,
-  ringSweepRate:  0,        // 0 = sweep off (static freq applies)
-  ringSweepLow:   100,
-  ringSweepHigh:  800,
-  ringSweepWave:  "sine",
+  ringEnabled:        true,
+  ringFreq:           200,
+  ringDepth:          0,
+  ringSweepRate:      0,        // 0 = sweep off (static freq applies)
+  ringSweepRateMode:  "Hz",
+  ringSweepRateNote:  "1/4",
+  ringSweepLow:       100,
+  ringSweepHigh:      800,
+  ringSweepWave:      "sine",
 
   tremoloEnabled:  true,
   tremoloRate:     4,
@@ -227,12 +268,14 @@ export const defaultFxParams = (): FxParams => ({
   tremoloDepth:    0,
   tremoloPhase:    0,
 
-  pannerEnabled:   true,
-  pannerMix:       0,
-  pannerSweepRate: 0.5,
-  pannerSpreadL:   1,
-  pannerSpreadR:   1,
-  pannerSweepWave: "sine",
+  pannerEnabled:        true,
+  pannerMix:            0,
+  pannerSweepRate:      0.5,
+  pannerSweepRateMode:  "Hz",
+  pannerSweepRateNote:  "1/4",
+  pannerSpreadL:        1,
+  pannerSpreadR:        1,
+  pannerSweepWave:      "sine",
 
   delayEnabled:   true,
   delayTime:      0.3,
@@ -243,7 +286,14 @@ export const defaultFxParams = (): FxParams => ({
 
   phaserEnabled:  true,
   phaseRate:      1.0,
+  phaseRateMode:  "Hz",
+  phaseRateNote:  "1/4",
   phaseDepth:     0,
+
+  pitchEnabled:   true,
+  pitchSemitones: 0,
+  pitchCents:     0,
+  pitchMix:       1.0,
 
   reverbEnabled:  true,
   reverbSize:     1.5,
@@ -329,12 +379,27 @@ export const useFxStore = create<FxStore>()(
       clearBurn: () => set(initialBurnState),
     }),
     {
-      // BUMPED v5 → v6: the single pannerSpread knob was reverted
+      // BUMPED v6 → v7: added Hz ⇄ ♪ mode + note fields for the
+      // three remaining rate params (ringSweepRate, pannerSweepRate,
+      // phaseRate).  Stale v6 entries lack the new fields, which
+      // would surface as `undefined` mode on first render —
+      // KnobNoteToggle's mode toggle would render in a broken state
+      // until the user clicked it.  See PLAN_FX_RACK_V0.3.md §3.2.
+      //
+      // v5 → v6 history: the single pannerSpread knob was reverted
       // to the asymmetric two-knob form (pannerSpreadL +
       // pannerSpreadR) so the user can clamp the sweep to one
-      // side.  Stale v5 entries lack the new fields and would crash
+      // side.  Stale v5 entries lacked the new fields and crashed
       // on first knob render.
-      name: "slurmify_fx_session_v6",
+      // BUMPED v7 → v8: added pitch shifter fields (pitchEnabled,
+      // pitchSemitones, pitchCents, pitchMix) for v0.3 Phase 4.
+      // Stale v7 entries lack these fields; if loaded without
+      // bumping the version the pitch knobs would render undefined
+      // values and the rack would behave erratically.  History
+      // of prior bumps in this file: v5→v6 (asymmetric panner
+      // spread), v6→v7 (beat-mode toggles on ring/panner/phaser
+      // rate).
+      name: "slurmify_fx_session_v8",
       // Only the user-meaningful preferences (knob positions) survive
       // reloads.  Burn-job state stays transient because burnedFileId
       // references a backend-side file that's gone after a sidecar

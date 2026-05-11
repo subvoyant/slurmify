@@ -54,6 +54,33 @@ class BurnFxRequest(BaseModel):
     phase_rate:  float = 1.0      # phaser LFO rate Hz
     phase_depth: float = 0.0      # phaser depth 0–1
 
+    # ── v0.3 additions (PLAN_FX_RACK_V0.3.md) ──────────────────────────
+    # Tremolo + auto-panner ported from Web Audio to slurmcore so they
+    # bake into the burned output instead of being live-preview-only.
+    # All rate fields are pre-resolved to Hz on the JS side (note-mode
+    # conversion lives in useBurnFxJob.ts), so Python doesn't need
+    # the note grammar here.
+    tremolo_rate:        float = 0.0     # tremolo LFO Hz (resolved from ♪ on JS side)
+    tremolo_depth:       float = 0.0     # 0–1; 0 = bypass
+    tremolo_phase:       float = 0.0     # L/R phase offset in degrees, 0–360
+
+    panner_sweep_rate:   float = 0.0     # auto-pan LFO Hz (resolved from ♪ on JS side)
+    panner_spread_l:     float = 1.0     # max excursion to the left, 0–1
+    panner_spread_r:     float = 1.0     # max excursion to the right, 0–1
+    panner_wave:         str   = "sine"  # "sine" | "saw" | "square" | "triangle" | "noise"
+    panner_mix:          float = 0.0     # wet/dry blend; 0 = bypass
+
+    # ── v0.3 Phase 3: reverb (Freeverb procedural impl) ────────────
+    reverb_size:         float = 1.5     # tail length in seconds, 0.1–5
+    reverb_decay:        float = 2.5     # shape exponent, 1=linear, 6=bunker
+    reverb_mix:          float = 0.0     # wet/dry blend; 0 = bypass
+
+    # ── v0.3 Phase 4: pitch shifter (pyrubberband, post-phaser) ────
+    # JS side combines semitones + cents (cents/100 added to semitones)
+    # before sending, so this is one float covering the full range.
+    pitch_semitones:     float = 0.0     # -24 to +24 (incl. fractional cents)
+    pitch_mix:           float = 0.0     # wet/dry blend; 0 = bypass
+
     # ── Output ─────────────────────────────────────────────────────────
     output_format: str = "wav"
 
@@ -84,7 +111,16 @@ def start_burn_fx(req: BurnFxRequest):
         f"dist_drive={req.dist_drive} ring_freq={req.ring_freq} "
         f"ring_depth={req.ring_depth} delay_sec={req.delay_sec} "
         f"delay_fb={req.delay_fb} delay_mix={req.delay_mix} "
-        f"phase_rate={req.phase_rate} phase_depth={req.phase_depth}",
+        f"phase_rate={req.phase_rate} phase_depth={req.phase_depth} "
+        f"tremolo_rate={req.tremolo_rate} tremolo_depth={req.tremolo_depth} "
+        f"tremolo_phase={req.tremolo_phase} "
+        f"panner_sweep_rate={req.panner_sweep_rate} "
+        f"panner_spread_l={req.panner_spread_l} "
+        f"panner_spread_r={req.panner_spread_r} "
+        f"panner_wave={req.panner_wave!r} panner_mix={req.panner_mix} "
+        f"reverb_size={req.reverb_size} reverb_decay={req.reverb_decay} "
+        f"reverb_mix={req.reverb_mix} "
+        f"pitch_semitones={req.pitch_semitones} pitch_mix={req.pitch_mix}",
         flush=True,
     )
 
@@ -159,14 +195,28 @@ def _run_burn_fx_blocking(job: Job, req: BurnFxRequest, src_path: str) -> None:
 
         y, sr = slurmcore.apply_fx(
             y, sr,
-            dist_drive  = req.dist_drive,
-            ring_freq   = req.ring_freq,
-            ring_depth  = req.ring_depth,
-            delay_sec   = req.delay_sec,
-            delay_fb    = req.delay_fb,
-            delay_mix   = req.delay_mix,
-            phase_rate  = req.phase_rate,
-            phase_depth = req.phase_depth,
+            dist_drive        = req.dist_drive,
+            ring_freq         = req.ring_freq,
+            ring_depth        = req.ring_depth,
+            delay_sec         = req.delay_sec,
+            delay_fb          = req.delay_fb,
+            delay_mix         = req.delay_mix,
+            phase_rate        = req.phase_rate,
+            phase_depth       = req.phase_depth,
+            # ── v0.3 additions ────────────────────────────────────────
+            tremolo_rate      = req.tremolo_rate,
+            tremolo_depth     = req.tremolo_depth,
+            tremolo_phase     = req.tremolo_phase,
+            panner_sweep_rate = req.panner_sweep_rate,
+            panner_spread_l   = req.panner_spread_l,
+            panner_spread_r   = req.panner_spread_r,
+            panner_wave       = req.panner_wave,
+            panner_mix        = req.panner_mix,
+            reverb_size       = req.reverb_size,
+            reverb_decay      = req.reverb_decay,
+            reverb_mix        = req.reverb_mix,
+            pitch_semitones   = req.pitch_semitones,
+            pitch_mix         = req.pitch_mix,
         )
         _set(0.85, "FX chain complete")
 

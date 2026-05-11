@@ -1463,6 +1463,489 @@ def _fx_phaser(y: np.ndarray, sr: int, rate: float, depth: float) -> np.ndarray:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# _fx_tremolo — sine-LFO amplitude modulation
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Added in v0.3 (PLAN_FX_RACK_V0.3.md §3.3) to close the FE/BE FX parity
+# gap.  Previously tremolo lived only in the React Web Audio chain
+# (src/hooks/useFxChain.ts:617+) — so live preview had tremolo but burn-fx
+# silently dropped it.  This is the Python mirror.
+#
+# Topology (matches the Web Audio impl):
+#
+#   carrier signal ── × ──> out
+#                     ^
+#                     │
+#   sine LFO (rate Hz) ── (depth * 0.5 * (1 + sin(2πft))) + (1 - depth)
+#
+# At depth=0  the modulator is constant 1.0 (pure passthrough).
+# At depth=1  the modulator sweeps 0→1 (full amplitude modulation —
+# signal briefly silences at every LFO trough).
+# At depth=0.5 the modulator sweeps 0.5→1.0 (classic "bouncing" trem).
+#
+# Stereo handling: the right channel's LFO gets a phase offset for
+# stereo width.  At phase_offset=0 (default) L and R modulate in lock-
+# step.  At phase_offset=π/2 (90°) the right channel is a quarter-period
+# behind, which produces a nice rotation-like motion when paired with
+# the panner downstream.
+#
+# Why no SciPy: tremolo is a pointwise multiply of audio by an LFO
+# vector — pure NumPy is fine and keeps the apply_fx hot path light
+# (ADR-0016).
+
+def _fx_tremolo(
+    y: np.ndarray,
+    sr: int,
+    rate: float,
+    depth: float,
+    phase_offset_deg: float,
+) -> np.ndarray:
+    """Sine-LFO amplitude modulation (tremolo).
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Audio array.  Shape (n,) mono or (channels, n) stereo.
+    sr : int
+        Sample rate.
+    rate : float
+        LFO rate in Hz.  Typical musical range 0.05–20.  Already
+        resolved to Hz on the JS side (note-mode conversion happens
+        in useBurnFxJob.ts before the request is sent).
+    depth : float
+        Modulation depth, 0–1.  0 = bypass; the function returns the
+        input unchanged.
+    phase_offset_deg : float
+        Stereo phase offset in degrees, 0–360.  Shifts the right
+        channel's LFO relative to the left.  Ignored for mono input.
+
+    Returns
+    -------
+    np.ndarray
+        Same shape as `y`, float32.
+    """
+    if depth < 0.001 or rate <= 0:
+        return y                  # bypass — no audible effect to compute
+
+    mono = y.ndim == 1
+    if mono:
+        y = y[np.newaxis, :]
+    n_ch, n = y.shape
+
+    # LFO time base.  float64 for the trig precision; we cast back to
+    # float32 at the return.  This is the same precision posture
+    # _fx_phaser uses.
+    t = np.arange(n, dtype=np.float64) / sr
+    omega = 2.0 * np.pi * float(rate)
+
+    # Per the Web Audio impl: lfo = (1-depth) + depth * 0.5 * (1 + sin)
+    # so the modulator stays in [1-depth, 1.0] — never inverts.  This
+    # is the "DC + AC" amplitude envelope shape musicians expect from a
+    # tremolo (as opposed to ring-mod which is bipolar).
+    lfo_l = (1.0 - depth) + depth * 0.5 * (1.0 + np.sin(omega * t))
+
+    if n_ch >= 2 and not mono:
+        phase_rad = float(phase_offset_deg) * np.pi / 180.0
+        lfo_r = (1.0 - depth) + depth * 0.5 * (1.0 + np.sin(omega * t + phase_rad))
+        # Apply per-channel LFOs.  Channels beyond 2 (we don't currently
+        # produce these but be defensive) reuse the left LFO.
+        out = y.astype(np.float64).copy()
+        out[0] *= lfo_l
+        out[1] *= lfo_r
+        for ch in range(2, n_ch):
+            out[ch] *= lfo_l
+    else:
+        out = (y.astype(np.float64) * lfo_l)
+
+    out = out.astype(np.float32)
+    return out[0] if mono else out
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# _fx_panner — auto-panner with asymmetric L/R spread + LFO sweep
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Added in v0.3 (PLAN_FX_RACK_V0.3.md §3.4).  Mirrors the Web Audio
+# panner (src/hooks/useFxChain.ts:451+) so live preview and burn-fx
+# place sources at the same point in the stereo field.
+#
+# Mathematical model — for each sample:
+#
+#   pan(t) ∈ [-1, +1]   where −1 = hard L, 0 = centre, +1 = hard R
+#
+#   pan(t) = midpoint  + half_range × lfo(t)
+#   midpoint   = (spread_R − spread_L) / 2
+#   half_range = (spread_R + spread_L) / 2
+#
+# When spread_L = spread_R = 1 (symmetric, the default), midpoint = 0
+# and the LFO sweeps the full L↔R range.  When spread_L = 0 and
+# spread_R = 1, the LFO sweeps centre↔hard-R only.
+#
+# Constant-power pan law (the standard for stereo positioning):
+#   gain_L = cos((pan + 1) × π/4)
+#   gain_R = sin((pan + 1) × π/4)
+# This keeps perceived loudness constant as the source moves left↔right
+# (the loudness sum gain_L² + gain_R² = 1 at every position).
+#
+# Wet/dry mix: at mix=0 we return the input unchanged; at mix=1 we
+# replace the input with the panned signal; intermediate values blend.
+# This matches the Web Audio impl, where pannerMix=0 is bypass.
+
+def _fx_panner(
+    y: np.ndarray,
+    sr: int,
+    sweep_rate: float,
+    spread_l: float,
+    spread_r: float,
+    wave: str,
+    mix: float,
+) -> np.ndarray:
+    """Auto-panner with LFO-driven pan position.
+
+    Mono input is duplicated to stereo first so panning has somewhere
+    to go.  Stereo input keeps each channel's pre-pan content; the
+    panner reweights existing L/R amplitude rather than mixing the
+    channels.  (Same posture as Web Audio's StereoPannerNode: it
+    pans each channel independently with the constant-power law.)
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Audio.  Shape (n,) mono or (channels, n) stereo.
+    sr : int
+    sweep_rate : float
+        LFO rate in Hz.  0 = no movement (pan parks at midpoint).
+        Already resolved to Hz on the JS side.
+    spread_l, spread_r : float
+        0–1 sweep maxima for the L and R sides of the midpoint.
+        Asymmetric: setting spread_l = 0, spread_r = 1 gives a
+        "centre↔right" sweep parked off-centre.
+    wave : str
+        "sine" | "saw" | "square" | "triangle" | "noise"
+    mix : float
+        Wet/dry blend.  0 = bypass (return input unchanged).
+        1 = full panning effect.
+
+    Returns
+    -------
+    np.ndarray
+        Stereo array of shape (2, n), float32.  Mono input is
+        promoted; callers that need mono out must `_to_mono` it
+        themselves.
+    """
+    if mix < 0.001:
+        return y                  # bypass
+
+    # Promote mono → stereo so the constant-power law has something
+    # to pan.  This is a duplication, not a mixdown.
+    mono_in = y.ndim == 1
+    if mono_in:
+        y2 = np.stack([y, y])
+    elif y.shape[0] == 1:
+        y2 = np.concatenate([y, y], axis=0)
+    elif y.shape[0] >= 2:
+        # If somehow > 2 channels arrive (we don't generate these but
+        # be defensive), use channels 0/1 and drop the rest.
+        y2 = y[:2]
+    else:
+        return y
+
+    n = _n_samples(y2)
+    if n == 0:
+        return y2.astype(np.float32)
+
+    # Clamp spread to [0, 1] so a UI typo can't blow the math up.
+    sL = float(max(0.0, min(1.0, spread_l)))
+    sR = float(max(0.0, min(1.0, spread_r)))
+    midpoint   = (sR - sL) / 2.0
+    half_range = (sR + sL) / 2.0
+
+    # Build the LFO vector.  All waveforms in [-1, +1] so the
+    # half_range scaling maps to the [-sL, +sR] target range cleanly.
+    t = np.arange(n, dtype=np.float64) / sr
+    rate = float(sweep_rate)
+    if rate <= 0 or half_range < 1e-9:
+        # No sweep — pan parks at the midpoint.
+        lfo = np.zeros(n, dtype=np.float64)
+    elif wave == "saw":
+        # Rising sawtooth in [-1, +1].  Period = 1/rate.
+        period = 1.0 / rate
+        lfo = 2.0 * (t / period - np.floor(0.5 + t / period))
+    elif wave == "square":
+        lfo = np.sign(np.sin(2.0 * np.pi * rate * t))
+    elif wave == "triangle":
+        lfo = (2.0 / np.pi) * np.arcsin(np.sin(2.0 * np.pi * rate * t))
+    elif wave == "noise":
+        # Low-passed white noise, cutoff scaled to the rate so
+        # higher rate = faster wandering.  Mirrors the Web Audio
+        # impl which uses a band-limited noise source with cutoff
+        # = rate × 4 Hz.  We approximate that with a single-pole
+        # IIR low-pass via numpy.
+        rng = np.random.default_rng(seed=0xC0FFEE)   # deterministic per-build
+        noise = rng.standard_normal(n)
+        cutoff = max(0.5, rate * 4.0)
+        alpha = float(np.clip(1.0 - np.exp(-2.0 * np.pi * cutoff / sr), 1e-4, 1.0))
+        lpf = np.empty(n, dtype=np.float64)
+        prev = 0.0
+        for i in range(n):
+            prev = prev + alpha * (noise[i] - prev)
+            lpf[i] = prev
+        # Normalise to roughly [-1, +1].
+        peak = float(np.max(np.abs(lpf))) or 1.0
+        lfo = lpf / peak
+    else:
+        # default: sine
+        lfo = np.sin(2.0 * np.pi * rate * t)
+
+    # Pan position over time.
+    pan = midpoint + half_range * lfo
+    pan = np.clip(pan, -1.0, 1.0)
+
+    # Constant-power pan law.  pan ∈ [-1, +1]; map to angle [0, π/2].
+    angle = (pan + 1.0) * (np.pi / 4.0)
+    gain_l = np.cos(angle)
+    gain_r = np.sin(angle)
+
+    # Apply per-sample gains.  cast to float64 for the math, then
+    # blend with the dry input by `mix`, then cast back to float32.
+    dry  = y2.astype(np.float64)
+    wet  = np.stack([dry[0] * gain_l, dry[1] * gain_r])
+    out  = (1.0 - mix) * dry + mix * wet
+    return out.astype(np.float32)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# _fx_pitch — pyrubberband pitch shifter (FX-rack effect, not pre-slurm)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Added in v0.3 Phase 4 (PLAN_FX_RACK_V0.3.md §3.1).  The FX-rack
+# pitch shifter is distinct from the existing `pitch_shift_semitones`
+# parameter on the slurmify pipeline (which is applied PRE-slice as a
+# global key change to the source).  This effect lives in the FX rack
+# alongside distortion / delay / reverb, applied to ALREADY-slurmed
+# audio per the user's mental model: "added with other effects onto
+# slurm playback".
+#
+# Implementation: pyrubberband.pitch_shift wrapper.  Same engine the
+# pre-slurm pitch param uses, same _stereo_pyrb shape-juggling helper
+# (ADR-0021) so stereo inputs preserve channel layout through the
+# pyrb subprocess boundary.  No new dependencies — pyrubberband is
+# already bundled (slurmify-backend.spec) and the rubberband CLI is
+# already on PATH (or _MEIPASS PATH-bootstrap on Windows).
+#
+# Signal-chain position (from PLAN_FX_RACK_V0.3.md §3.1): immediately
+# BEFORE reverb.  Reasoning: the reverb tail blooms from the pitched
+# signal, giving the chain a "smear a pitched cloud into space"
+# character.  Putting pitch after reverb would mean the reverb gets
+# pitched — usable but less musically interesting.
+
+def _fx_pitch(
+    y: np.ndarray,
+    sr: int,
+    semitones: float,
+    mix: float,
+) -> np.ndarray:
+    """pyrubberband pitch shift applied as an FX-rack stage.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Audio.  Shape (n,) mono or (channels, n) stereo.
+    sr : int
+        Sample rate.
+    semitones : float
+        Pitch shift in semitones.  Coarse + fine (cents) are combined
+        on the JS side before this is sent, so a value like -1.5
+        represents −1 semitone and −50 cents.  Range typically
+        [-24, +24].  0 = bypass (returns input unchanged without
+        even invoking pyrb).
+    mix : float
+        Wet/dry blend, 0–1.  0 = bypass.  Doubler-style detune
+        effects are possible at mix=0.5 with semitones≈±0.1.
+
+    Returns
+    -------
+    np.ndarray
+        Same shape as y, float32.
+    """
+    if mix < 0.001 or abs(semitones) < 0.001:
+        return y                  # bypass — no audible effect to compute
+
+    # Lazy import — pyrubberband shells out to the `rubberband` binary,
+    # adding a few hundred ms of process-startup latency per call.
+    # Keeping the import local mirrors the existing pre-slurm pitch
+    # path and avoids importing rubberband unless the user actually
+    # turns pitch on.
+    import pyrubberband as pyrb
+
+    mono = y.ndim == 1
+    if mono:
+        y = y[np.newaxis, :]
+
+    # _stereo_pyrb (already in this file, used by the pre-slurm pitch
+    # at slurmcore.py:953) handles the (channels, n) ↔ (n, channels)
+    # transpose dance that pyrb requires, so we don't have to repeat
+    # the shape juggling here.  See ADR-0021 for the channel-layout
+    # boundary rule.
+    wet = _stereo_pyrb(pyrb.pitch_shift, y, sr, float(semitones))
+    wet = wet.astype(np.float32)
+    dry = y.astype(np.float32)
+
+    out = (1.0 - float(mix)) * dry + float(mix) * wet
+    return out[0] if mono else out
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# _fx_reverb — Freeverb procedural reverb
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Added in v0.3 Phase 3 (PLAN_FX_RACK_V0.3.md §3.5) to close the final
+# FE/BE FX-parity gap.  Live preview's reverb uses a Web Audio
+# ConvolverNode with a generated impulse response; we mirror it here
+# with the Jezar Freeverb structure (1999, public domain — see
+# https://ccrma.stanford.edu/~jos/pasp/Freeverb.html for the reference
+# implementation and tunings).
+#
+# Topology:
+#   x[n] ─┬─→ damped_comb_1 ─┐
+#         ├─→ damped_comb_2 ─┤
+#         ├─→     ...        ├─→ sum / 8 ─→ allpass_1 ─→ allpass_2 ─→
+#         ├─→     ...        │              allpass_3 ─→ allpass_4 ─→ y_wet
+#         └─→ damped_comb_8 ─┘
+#   y[n] = (1 - mix) * x[n] + mix * y_wet[n]
+#
+# Each damped comb implements:
+#   y[n] = x[n] + room_gain * lpf(y[n - D])
+#   lpf:  z[n] = (1 - damp) * y[n] + damp * z[n - 1]
+# which combined gives the IIR transfer function:
+#   H(z) = (1 - damp z⁻¹) / (1 - damp z⁻¹ - room_gain (1-damp) z⁻ᴰ)
+# implementable as one scipy.signal.lfilter call per comb — fast enough
+# that we don't need a per-sample Python loop or numba.
+#
+# Each allpass:
+#   H(z) = (-g + z⁻ᴰ) / (1 - g z⁻ᴰ),  g = 0.5
+# Also a single lfilter call.
+#
+# Stereo width: the right channel's delays are shifted by `stereo_spread`
+# samples (23 at 44.1 kHz) so the two channels' tails decorrelate
+# slightly, matching the Web Audio impl's stereo character.
+
+def _fx_reverb(
+    y: np.ndarray,
+    sr: int,
+    size: float,
+    decay: float,
+    mix: float,
+) -> np.ndarray:
+    """Freeverb-style procedural reverb.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Audio.  Shape (n,) mono or (channels, n) stereo.
+    sr : int
+        Sample rate.
+    size : float
+        Tail length in seconds, 0.1–5.  Maps to comb-feedback gain
+        in [0.5, 0.97].  Longer tail = more feedback per comb pass.
+    decay : float
+        Shape exponent, 1–6.  Maps to comb-damping in [0, 0.7].
+        1 = bright, no HF damping; 6 = bunker, lots of HF damping
+        in the feedback loop (matches the UI tooltip "1=linear →
+        6=bunker" character spectrum).
+    mix : float
+        Wet/dry blend, 0–1.  0 = bypass.
+
+    Returns
+    -------
+    np.ndarray
+        Same shape as y, float32.
+    """
+    if mix < 0.001:
+        return y
+
+    from scipy.signal import lfilter
+
+    mono = y.ndim == 1
+    if mono:
+        y = y[np.newaxis, :]
+    n_ch, n_samples = y.shape
+
+    # Jezar's canonical Freeverb tunings at 44.1 kHz, scaled
+    # proportionally to the actual sample rate.  Round to int and
+    # clamp to >=2 so the polynomial-coefficient arrays are at least
+    # length 3 (lfilter complains on degenerate kernels).
+    def _scale(d_at_44100: int) -> int:
+        return max(2, int(round(d_at_44100 * sr / 44100.0)))
+
+    comb_delays_L = [_scale(d) for d in (1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617)]
+    ap_delays_L   = [_scale(d) for d in (556, 441, 341, 225)]
+    stereo_spread = _scale(23)
+
+    # UI param mapping.
+    #   size [0.1, 5] → room_gain [0.5, 0.97].  Capped at 0.97 to
+    #   avoid runaway feedback near unity gain.  Linear-ish ramp;
+    #   the perceptual tail-length follows a -60dB rule that's
+    #   roughly exponential in room_gain, so this gives short tails
+    #   below 1s and long room/hall tails near the top of the range.
+    room_gain = float(np.clip(0.5 + 0.094 * float(size), 0.5, 0.97))
+    #   decay [1, 6] → damp [0, 0.7].  damp=0 lets HF energy circulate
+    #   freely (bright); higher damp low-passes each feedback pass
+    #   (darker, more "bunker"-like).
+    damp = float(np.clip((float(decay) - 1.0) / 5.0 * 0.7, 0.0, 0.7))
+    one_minus_damp = 1.0 - damp
+
+    # Pre-build per-comb a-coefficient tails — these are the IIR
+    # denominators for each comb.  Numerator is the same for every
+    # comb (the LPF in the feedback path).
+    def _damped_comb_coeffs(d: int) -> tuple[list[float], list[float]]:
+        # b numerator: [1, -damp]
+        # a denominator: [1, -damp, 0..., -room_gain * (1 - damp)] of length d + 1
+        b = [1.0, -damp]
+        a = [1.0, -damp] + [0.0] * (d - 2) + [-room_gain * one_minus_damp]
+        return b, a
+
+    def _allpass_coeffs(d: int) -> tuple[list[float], list[float]]:
+        # H(z) = (-g + z^-D) / (1 - g * z^-D), with g = 0.5 (Freeverb default)
+        g = 0.5
+        b = [-g] + [0.0] * (d - 1) + [1.0]
+        a = [1.0] + [0.0] * (d - 1) + [-g]
+        return b, a
+
+    wet = np.zeros((n_ch, n_samples), dtype=np.float64)
+
+    # Run the reverb network on each channel.  For >2 channels (rare
+    # but defensive) reuse the L network on extras — slurmcore never
+    # generates more than 2 today.
+    for ch in range(min(2, n_ch)):
+        x = y[ch].astype(np.float64)
+        spread = stereo_spread if ch == 1 else 0
+
+        # 8 parallel damped combs, summed and normalised by /8.
+        comb_sum = np.zeros_like(x)
+        for d_L in comb_delays_L:
+            d = d_L + spread
+            b, a = _damped_comb_coeffs(d)
+            comb_sum += lfilter(b, a, x)
+        comb_sum /= 8.0
+
+        # 4 series allpasses to smear the comb tail.
+        s = comb_sum
+        for d_L in ap_delays_L:
+            d = d_L + spread
+            b, a = _allpass_coeffs(d)
+            s = lfilter(b, a, s)
+
+        wet[ch] = s
+
+    # Mix wet ↔ dry.  Cast back to float32 at the boundary.
+    wet_f32 = wet.astype(np.float32)
+    dry_f32 = y.astype(np.float32)
+    out = (1.0 - float(mix)) * dry_f32 + float(mix) * wet_f32
+    return out[0] if mono else out
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # apply_fx  — full FX chain (called by burn_fx in app.py)
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -1477,16 +1960,45 @@ def apply_fx(
     delay_mix: float,
     phase_rate: float,
     phase_depth: float,
+    # ── v0.3: new effects (defaults are no-op for backward compat) ──
+    tremolo_rate: float        = 0.0,
+    tremolo_depth: float       = 0.0,
+    tremolo_phase: float       = 0.0,
+    panner_sweep_rate: float   = 0.0,
+    panner_spread_l: float     = 1.0,
+    panner_spread_r: float     = 1.0,
+    panner_wave: str           = "sine",
+    panner_mix: float          = 0.0,
+    # ── v0.3 Phase 3: reverb (Freeverb) ──
+    reverb_size:  float        = 1.5,
+    reverb_decay: float        = 2.5,
+    reverb_mix:   float        = 0.0,
+    # ── v0.3 Phase 4: pitch shifter (pyrubberband, post-phaser pre-reverb) ──
+    pitch_semitones: float     = 0.0,
+    pitch_mix:       float     = 0.0,
 ) -> tuple[np.ndarray, int]:
-    """Apply the full FX chain (distortion → ring mod → delay → phaser).
+    """Apply the full FX chain.
 
-    This is the pure DSP part of what was previously the entire burn_fx()
-    function in app.py.  The I/O concerns (loading the file, handling
-    gr.Error, writing the output file) remain in app.py's burn_fx().
+    Order matches the React useFxChain Web Audio graph exactly — see
+    PLAN_FX_RACK_V0.3.md §3 for the canonical chain and the FE/BE
+    parity matrix.  v0.3 adds tremolo (post-ring) and auto-panner
+    (final stage) to the Python side so burn-fx output matches the
+    live preview.
 
-    The FX order (distortion → ring mod → delay → phaser) matches the Web
-    Audio API graph in INIT_JS exactly so the burned FX sounds identical
-    to the live browser preview.  Do NOT reorder.
+    Signal chain:
+
+        dist → ring → trem → delay → phaser → panner
+
+    (Phase 3 + 4 of v0.3 will insert reverb after phaser and pitch
+    shift before reverb; this Phase 2 build skips those — they get
+    added without breaking parameter compatibility because the new
+    fields all have defaults.)
+
+    All rate/time params already resolved to Hz/seconds before this
+    call — note-mode → numeric conversion happens JS-side in
+    useBurnFxJob.ts.  Python doesn't need to know about the note
+    grammar (ADR-0020 keeps Python authoritative for the slurmify
+    side's note math; the FX side is JS-converted).
 
     Post-processing:
     — Peak-limit to 0.95 × full scale if the FX stack causes clipping.
@@ -1503,14 +2015,22 @@ def apply_fx(
         the _fx_* functions handle both.)
     sr : int
         Sample rate.
-    dist_drive : float   — waveshaper drive 0–1
-    ring_freq : float    — ring mod carrier Hz
-    ring_depth : float   — ring mod depth 0–1
-    delay_sec : float    — delay time seconds 0–1
-    delay_fb : float     — delay feedback 0–0.9
-    delay_mix : float    — delay wet/dry 0–1
-    phase_rate : float   — phaser LFO Hz
-    phase_depth : float  — phaser depth 0–1
+    dist_drive : float     — waveshaper drive 0–1
+    ring_freq : float      — ring mod carrier Hz
+    ring_depth : float     — ring mod depth 0–1
+    delay_sec : float      — delay time seconds 0–1
+    delay_fb : float       — delay feedback 0–0.9
+    delay_mix : float      — delay wet/dry 0–1
+    phase_rate : float     — phaser LFO Hz
+    phase_depth : float    — phaser depth 0–1
+    tremolo_rate : float   — tremolo LFO Hz (v0.3)
+    tremolo_depth : float  — tremolo depth 0–1 (v0.3)
+    tremolo_phase : float  — tremolo L/R phase offset, degrees 0–360 (v0.3)
+    panner_sweep_rate : float — auto-pan LFO Hz (v0.3)
+    panner_spread_l : float   — auto-pan max excursion left 0–1 (v0.3)
+    panner_spread_r : float   — auto-pan max excursion right 0–1 (v0.3)
+    panner_wave : str         — "sine"|"saw"|"square"|"triangle"|"noise" (v0.3)
+    panner_mix : float        — auto-pan wet/dry 0–1 (v0.3)
 
     Returns
     -------
@@ -1519,14 +2039,47 @@ def apply_fx(
         The caller decides whether to write it as mono or stereo based on
         the original input shape.
     """
-    # ── FX chain: order matches INIT_JS Web Audio graph ────────────────────
+    # ── FX chain: order matches useFxChain.ts Web Audio graph ─────────────
     y = _fx_distortion(y, float(dist_drive or 0))
     y = _fx_ring_mod(y, sr, float(ring_freq or 200), float(ring_depth or 0))
+    # Tremolo sits between ring-mod and delay so the delay tails carry
+    # the tremolo'd amplitude envelope (otherwise the trem would only
+    # modulate the freshly-emitted signal and delay echoes would feel
+    # detached from the trem rhythm).  Matches the Web Audio routing.
+    y = _fx_tremolo(y, sr,
+                    rate=float(tremolo_rate or 0),
+                    depth=float(tremolo_depth or 0),
+                    phase_offset_deg=float(tremolo_phase or 0))
     y = _fx_delay(y, sr,
                   float(delay_sec or 0.3),
                   float(delay_fb or 0.35),
                   float(delay_mix or 0))
     y = _fx_phaser(y, sr, float(phase_rate or 1.0), float(phase_depth or 0))
+    # Pitch shifter (Phase 4): sits between phaser and reverb per the
+    # v0.3 plan, so the reverb tail blooms from the PITCHED signal —
+    # the "smear a pitched cloud into space" character.  Cheap to
+    # bypass: when semitones≈0 or mix≈0 we skip the pyrb subprocess
+    # entirely (the function's own early-exit).
+    y = _fx_pitch(y, sr,
+                  semitones = float(pitch_semitones or 0),
+                  mix       = float(pitch_mix or 0))
+    # Reverb sits BEFORE panner so the panner sweep operates on the
+    # full wet+dry signal including the reverb tail (matches the Web
+    # Audio routing: ConvolverNode → panner → destination).
+    y = _fx_reverb(y, sr,
+                   size  = float(reverb_size  if reverb_size  is not None else 1.5),
+                   decay = float(reverb_decay if reverb_decay is not None else 2.5),
+                   mix   = float(reverb_mix   or 0))
+    # Panner is the final stage — placing the fully-processed signal
+    # (now including the reverb tail) in the stereo field.  Putting it
+    # last means every preceding effect's mono/stereo content survives
+    # intact until the panner repositions it (matches useFxChain.ts).
+    y = _fx_panner(y, sr,
+                   sweep_rate=float(panner_sweep_rate or 0),
+                   spread_l=float(panner_spread_l if panner_spread_l is not None else 1.0),
+                   spread_r=float(panner_spread_r if panner_spread_r is not None else 1.0),
+                   wave=str(panner_wave or "sine"),
+                   mix=float(panner_mix or 0))
 
     # ── Safety limiting ─────────────────────────────────────────────────────
     # Distortion + ring mod can occasionally boost peak amplitude above 1.0.
