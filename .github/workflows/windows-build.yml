@@ -75,10 +75,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up Node 20
+      - name: Set up Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # pnpm 11.x (installed via corepack-prepare-latest) uses
+          # `node:sqlite` which was added to Node.js in v22.13.  Running
+          # it on Node 20 produces ERR_UNKNOWN_BUILTIN_MODULE
+          # (see v0.2.1-win build 25644504891 for the canonical
+          # symptom).  Pin to 22; both 22 LTS and the latest pnpm are
+          # pre-installed on `windows-latest` runners.
+          node-version: "22"
 
       - name: Enable pnpm via corepack
         run: |
