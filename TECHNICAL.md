@@ -1329,3 +1329,5 @@ with `ModuleNotFoundError`.
 *Last updated: 2026-05-07 · v0.1.6 · Stereo end-to-end through the slurmify pipeline (ADR-0021)*
 
 *v0.2.0 deprecation banner added 2026-05-09: most sections are v0.1.x-era. See ADR-0022, AGENT_DIGEST.md, and CLAUDE.md for current architecture.*
+
+*v0.2.3 (2026-05-11): added FX-rack-side pitch shifter (slurmcore._fx_pitch, phaze AudioWorklet live preview), tremolo / auto-panner / Freeverb Python ports, beat-mode toggles on all rate/time FX params.  See docs/PLAN_FX_RACK_V0.3.md for the design and chain order.*

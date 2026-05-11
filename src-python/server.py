@@ -131,7 +131,7 @@ from api import upload, slurmify, fx, render, files, analyze
 app = FastAPI(
     title="Slurmify Backend",
     description="FastAPI sidecar for the Tauri/React slurmify frontend (ADR-0022).",
-    version="0.2.1",
+    version="0.2.3",
     # Disable the auto-generated /docs and /redoc endpoints in production
     # — they're useful for development but not needed when the only
     # consumer is our own React frontend running on the same machine.
@@ -192,7 +192,7 @@ def health() -> dict[str, str | bool]:
     import slurmio
     return {
         "status":  "ok",
-        "version": "0.2.1",
+        "version": "0.2.3",
         "ready":   True,
         "tmp_dir": slurmio.SESSION_TMP_DIR,
     }
@@ -227,7 +227,7 @@ def write_discovery_file(port: int) -> None:
         "port":       port,
         "pid":        os.getpid(),
         "started_at": time.time(),
-        "version":    "0.2.1",
+        "version":    "0.2.3",
     }
     # Atomic write — write to temp then rename, so a polling reader never
     # sees a half-written file.

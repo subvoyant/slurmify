@@ -37,7 +37,7 @@ The DSP engine (`slurmcore.py`, `slurmio.py`) is unchanged from v0.1.6
 note-mode, stereo handling, MAX RANDOM, beat masks, or FX burning still
 lives in those two files at the repo root.
 
-**Current version: 0.2.1.** Source of truth is the `version` field in
+**Current version: 0.2.3.** Source of truth is the `version` field in
 `src-tauri/tauri.conf.json`; mirror it in `package.json` and
 `src-python/pyproject.toml` on every bump.
 

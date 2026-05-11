@@ -1,10 +1,25 @@
-# SIENA Slurmer v0.2.1 — Tester Notes
+# SIENA Slurmer v0.2.3 — Tester Notes
 
-Hi Max — thanks for testing. This is the **v0.2.1** polish build of the new Tauri/React UI you saw in v0.2.0. Same shape, fewer rough edges.
+Hi Max — thanks for testing. This is the **v0.2.3** FX-rack expansion build. Same DSP engine you know from v0.1.6 / v0.2.x, but the FX rack has new effects and full live-preview ↔ burn parity.
 
 ---
 
-## What's new in 0.2.1
+## What's new in 0.2.3
+
+The biggest update to the FX rack since v0.2.0. Three new effects, full live-preview ↔ burn parity for everything in the rack, plus a real-time pitch shifter:
+
+- **Pitch shifter in the FX rack.** New PITCH module with SEMITONES (±24) and CENTS (±100) knobs plus a wet/dry MIX. Live preview uses the phaze phase-vocoder AudioWorklet (~20 ms latency — feels essentially real-time when you twist the knob). The burn / YouTube render uses pyrubberband for offline-quality phase-vocoder rendering. **Not** to be confused with the existing pre-slurm pitch knob in STRETCH — that one tunes the source key before slicing; this one is a post-FX effect alongside delay / phaser / reverb.
+- **Tremolo, auto-panner, and reverb now bake into burn-FX output.** Previously these three effects only existed in the live waveform preview — clicking "burn FX" or rendering a YouTube MP4 silently dropped them. Now they all flow through to the burned audio. Reverb is Freeverb-style (procedural, no IR file needed) tuned via SIZE (0.1–5 s) and DECAY (1–6, linear → bunker).
+- **Beat-mode toggles on every rate/time FX param.** Tremolo + delay already had Hz/ms ⇄ ♪ toggles in v0.2.x; this release brings ring sweep, panner sweep, and phaser rate up to parity. Toggle to ♪ mode and pick a note value, and the LFO rate locks to the detected BPM (e.g., "1/8" at 120 BPM = 4 Hz).
+- **Slurmify clears stale burn-FX state on success.** Previously, after burning FX and then re-running slurmify with new params, the OUTPUT player would keep playing the old burned audio (because the burn took priority). Now a fresh slurm replaces the stale burn so what you hear matches what you just slurmed.
+- **Compressed bottom-row FX layout.** PANNER reorganized from 5-in-a-row to a 2×2 knob grid + WAVE selector on the right. DELAY and REVERB restructured as Olympic-rings staggers (2 knobs on top, 1 nested below) — same visual rhythm as STUTTER's chance / reps-max / reverse / skip / spread stack. PHASER controls centred in their narrower slot. Makes room for the new PITCH rack without growing the panel height.
+- **Per-effect bypass propagates to burn.** Disabling an effect via its rack header (clicking the dot) now actually bypasses it in the burn output too — previously the header disable only affected live preview.
+
+The DSP engine is still the same one you know from 0.1.6 / 0.2.x — no audio-quality changes to slicing, stretching, or any of the original four FX (distortion / ring / delay / phaser).
+
+---
+
+## What's new in 0.2.1 (recap)
 
 The first **signed + notarized** Slurmify build. Plus several rough-edge fixes that came out of the v0.2.0 tester round:
 

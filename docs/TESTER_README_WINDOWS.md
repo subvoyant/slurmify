@@ -2,19 +2,32 @@
 
 Hi Bob — thanks for testing the Windows version.
 
-This is the first Windows build of SIENA Slurmer 0.2.1, the same desktop app the Mac team has been testing. Same UI, same audio engine — just packaged for Windows instead of macOS.
+This is SIENA Slurmer **0.2.3** for Windows — same desktop app the Mac team has been testing, packaged for Windows instead of macOS. The FX rack got a significant expansion in this release; see "What's new in 0.2.3" below.
+
+---
+
+## What's new in 0.2.3
+
+The FX rack has three new effects and a real-time pitch shifter:
+
+- **PITCH module** — new effect with SEMITONES (±24) and CENTS (±100) knobs plus a wet/dry MIX. Twist the knob, hear the pitch change immediately (~20 ms latency); burns into the YouTube render too at offline phase-vocoder quality.
+- **Tremolo, auto-panner, and reverb now bake into the burn / YouTube render.** Previously these only worked in live preview and silently disappeared from the rendered output. Now what you hear is what you export.
+- **Beat-mode toggles on every rate/time FX param** — Hz ⇄ ♪ on ring sweep, panner sweep, and phaser rate, matching what tremolo and delay already had. Lock LFO rates to note values at the detected BPM.
+- **Compressed FX rack layout** — PANNER reorganized as a 2×2 grid + wave selector; DELAY and REVERB stacked Olympic-rings style; PITCH module slots in between PANNER and REVERB. Same panel height as v0.2.1, just denser.
+
+The audio engine (slicing, stretching, the original four FX) is unchanged from what you've been testing on the Mac side.
 
 ---
 
 ## What you got
 
-A single file: **`SIENA Slurmer_0.2.1_x64-setup.exe`** — that's a standard Windows installer. Run it, follow the wizard, you're set.
+A single file: **`SIENA Slurmer_0.2.3_x64-setup.exe`** — that's a standard Windows installer. Run it, follow the wizard, you're set. (If you have an older v0.2.1 install, the new installer replaces it in-place; no need to uninstall first thanks to the NSIS pre-install hook that kills the running app.)
 
 ---
 
 ## 1. Install
 
-1. Find **`SIENA Slurmer_0.2.1_x64-setup.exe`** in your Downloads folder.
+1. Find **`SIENA Slurmer_0.2.3_x64-setup.exe`** in your Downloads folder.
 2. Double-click it.
 
 ## 2. The "Windows protected your PC" dialog

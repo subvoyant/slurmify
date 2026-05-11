@@ -1,7 +1,7 @@
 {
   "name": "slurmify",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "Subvoyant SIENA Slurmer — Tauri + React frontend (ADR-0022)",
   "type": "module",
   "scripts": {

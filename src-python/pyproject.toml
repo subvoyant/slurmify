@@ -21,7 +21,7 @@
 
 [project]
 name = "slurmify-backend"
-version = "0.2.1"
+version = "0.2.3"
 description = "Subvoyant SIENA Slurmer FastAPI backend (Tauri sidecar)"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }

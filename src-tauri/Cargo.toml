@@ -16,7 +16,7 @@
 
 [package]
 name        = "slurmify"
-version     = "0.2.1"
+version     = "0.2.3"
 description = "Subvoyant SIENA Slurmer (ADR-0022 — Tauri shell)"
 authors     = ["Subvoyant <software@subvoyant.com>"]
 edition     = "2021"

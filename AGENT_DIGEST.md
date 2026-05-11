@@ -30,7 +30,7 @@ The DSP engine (`slurmcore.py` + `slurmio.py` at repo root) is
 [ADR-0022](docs/adr/0022-tauri-react-migration.md) for the migration
 spec.
 
-Current version: **0.2.1** (canonical source: `version` field in
+Current version: **0.2.3** (canonical source: `version` field in
 `src-tauri/tauri.conf.json`; mirror in `package.json` and
 `src-python/pyproject.toml`).
 
@@ -426,4 +426,4 @@ has drifted from a state that was previously well-mapped.
 
 ---
 
-*Last updated: 2026-05-09 · v0.2.1 · Tauri 2 + React 19 + FastAPI sidecar (ADR-0022)*
+*Last updated: 2026-05-11 · v0.2.3 · Tauri 2 + React 19 + FastAPI sidecar (ADR-0022); FX rack v2 (pitch + tremolo/panner/reverb Python port + phaze live pitch)*

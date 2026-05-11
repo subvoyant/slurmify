@@ -165,7 +165,7 @@ export function App() {
               clicking the version doesn't open subvoyant.com (a
               version number isn't a navigational target). */}
           <span className="lcd text-[14px] tracking-wide text-slurm-muted">
-            v0.2.1
+            v0.2.3
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -276,9 +276,9 @@ export function App() {
             "text-[11px] leading-relaxed text-slurm-muted",
           )}
         >
-          v0.2.1 — signed + notarized DMG, FX-on-by-default for YouTube renders, sticky TopBar, asset bundling fixes.{" "}
+          v0.2.3 — FX rack expansion: real-time pitch shifter (phaze phase-vocoder), beat-mode toggles on all rate/time FX params, tremolo + auto-panner + reverb now bake into burn-fx output (closes FE/BE parity), compressed bottom-row layout with Olympic-stagger DELAY / REVERB, slurmify clears stale burn state on success.{" "}
           <span className="text-slurm-rose">
-            Next: tester feedback round, then v0.3 feature work.
+            Next: tester feedback round, then v0.3 stretch / pitch / dynamics work.
           </span>
         </div>
       </main>
