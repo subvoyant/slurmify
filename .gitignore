@@ -21,7 +21,18 @@ dist/
 .DS_Store
 .AppleDouble
 .LSOverride
-Icon?
+# Anchored to repo root so this only matches a stray top-level Finder
+# folder-icon resource-fork marker file (named "Icon\r" historically).
+# Originally this line was an un-anchored `Icon?` — which on case-
+# insensitive filesystems (the macOS default) silently matched any
+# 5-character directory beginning with `icon`, including our
+# src-tauri/icons/ folder, ghosting every icon file from every commit.
+# Tauri's local Mac build still worked because tauri-bundler reads
+# icons from the on-disk working tree, but CI clones got an empty
+# src-tauri/icons/ and the Windows tauri-build script failed with:
+# `icons/icon.ico` not found; required for generating a Windows
+# Resource file during tauri-build.  Keep the leading `/` here.
+/Icon?
 ._*
 .Spotlight-V100
 .Trashes
