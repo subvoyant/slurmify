@@ -84,7 +84,17 @@ If the app crashes or silently fails to launch, we'd like to see what the Python
 
 ## Uninstall
 
-Standard Windows uninstall — Start Menu → "SIENA Slurmer" right-click → Uninstall. Or Settings → Apps → Installed apps → SIENA Slurmer → Uninstall. Removes the install folder cleanly. The session-temp folders under `%TEMP%\slurmify-session-*` aren't touched by the uninstaller (they're transient by design and Windows sweeps `%TEMP%` periodically), but if you want to wipe them yourself: delete anything matching that pattern.
+The installer registers SIENA Slurmer as a normal Windows app, so there are three ways to remove it — pick whichever is easiest:
+
+**Option 1 — Start Menu (fastest).** Open the Start Menu, type "SIENA Slurmer," right-click the app icon, and choose **"Uninstall."** Windows opens "Installed apps"; click the **"…"** next to SIENA Slurmer, then **"Uninstall."** Confirm and it's gone in a few seconds.
+
+**Option 2 — Settings.** Open **Settings → Apps → Installed apps**, scroll to "SIENA Slurmer," click the **"…"** menu, click **"Uninstall."**
+
+**Option 3 — Run the uninstaller directly.** The installer drops an `uninstall.exe` next to the app binary at `%LOCALAPPDATA%\SIENA Slurmer\uninstall.exe`. Double-click it from File Explorer, or paste that path into Win + R and hit Enter.
+
+All three routes do the same thing: remove the install folder, the Start Menu shortcut, and the registry entry under HKCU. The installer does NOT require admin rights (per-user install mode), so the uninstaller doesn't either — no UAC prompt.
+
+**What the uninstaller leaves behind.** Session temp files under `%TEMP%\slurmify-session-*\` are NOT touched (they're transient by design — Slurmify wipes them on quit; if Slurmify ever crashed mid-session there may be a few lingering folders Windows cleans up on its own schedule). If you want to scrub them manually: paste `%TEMP%` into File Explorer's address bar and delete anything matching `slurmify-session-*`.
 
 ---
 

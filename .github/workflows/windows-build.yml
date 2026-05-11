@@ -103,14 +103,57 @@ jobs:
       # PyInstaller spec hard-fails the build if either is missing
       # (per ADR-0023's posture, applied identically on Windows).
       #
-      # ffmpeg is available via Chocolatey.  rubberband is NOT — the
-      # `rubberband-cli` choco package does not exist as of May 2026
-      # (we tried; that's how this workflow first broke).  Official
-      # Windows binaries are distributed by Breakfast Quay (the upstream
-      # project) at https://breakfastquay.com/rubberband/ as a zip.
-      # Download + extract + add to PATH via $env:GITHUB_PATH.
-      - name: Install ffmpeg via Chocolatey
-        run: choco install -y ffmpeg
+      # We install BOTH via direct downloads from upstream mirrors and
+      # put them on PATH via $env:GITHUB_PATH.  Chocolatey is NOT used
+      # for either — see the v0.2.1-win-3 incident:
+      #
+      #   `choco install -y ffmpeg` puts a SHIM at
+      #   C:\ProgramData\Chocolatey\bin\ffmpeg.EXE (~70 KB) that
+      #   delegates to the real binary buried under
+      #   C:\ProgramData\Chocolatey\lib\ffmpeg\....  Our PyInstaller
+      #   spec resolves ffmpeg via shutil.which("ffmpeg") and bundles
+      #   whatever it finds — and what it found was the shim, not the
+      #   ~150 MB real static binary.  At runtime on the tester's
+      #   laptop the shim had no chocolatey lib dir to delegate to,
+      #   so librosa's audioread fallback got empty output from
+      #   "ffmpeg" and surfaced an empty NoBackendError on every m4a
+      #   upload.  Direct downloads of self-contained binaries side-
+      #   step the shim problem entirely.
+      - name: Install ffmpeg (download from gyan.dev release mirror)
+        shell: pwsh
+        run: |
+          $FfmpegVersion = "8.1.1"
+          $Url = "https://github.com/GyanD/codexffmpeg/releases/download/$FfmpegVersion/ffmpeg-$FfmpegVersion-essentials_build.zip"
+          $Zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $Dir = "$env:RUNNER_TEMP\ffmpeg"
+
+          Write-Host "[ci] Downloading $Url"
+          Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing -ErrorAction Stop
+
+          Write-Host "[ci] Expanding to $Dir"
+          Expand-Archive -Path $Zip -DestinationPath $Dir -Force
+
+          # The zip extracts to a versioned subdir like
+          # ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe.  Find it and
+          # put its directory on PATH for subsequent steps.
+          $Exe = Get-ChildItem $Dir -Recurse -Filter "ffmpeg.exe" |
+                 Select-Object -First 1
+          if (-not $Exe) {
+            Write-Error "[ci] ffmpeg.exe not found inside the downloaded zip. The gyan.dev archive layout may have changed."
+            exit 1
+          }
+          # Sanity check: gyan.dev essentials ships a ~150 MB statically-
+          # linked binary.  Anything sub-10 MB is almost certainly a
+          # shim — fail loudly rather than bundle one into the sidecar.
+          $SizeMb = [math]::Round($Exe.Length / 1MB, 2)
+          Write-Host "[ci] Found ffmpeg.exe at $($Exe.FullName) ($SizeMb MB)"
+          if ($Exe.Length -lt 10MB) {
+            Write-Error "[ci] ffmpeg.exe is only $SizeMb MB - suspiciously small for a static build. Bailing rather than bundle a shim."
+            exit 1
+          }
+          $BinDir = $Exe.Directory.FullName
+          Write-Host "[ci] Adding $BinDir to GITHUB_PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $BinDir
 
       - name: Install rubberband (download from breakfastquay.com)
         shell: pwsh

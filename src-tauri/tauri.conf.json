@@ -46,6 +46,12 @@
     "longDescription":  "Subvoyant SIENA Slurmer — opinionated slurmcore: chop, time-stretch, and apply effects to audio. Local processing; your audio never leaves your machine.",
     "externalBin": [
       "binaries/slurmify-backend"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
   }
 }
