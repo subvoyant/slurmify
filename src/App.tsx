@@ -47,7 +47,12 @@ import { open as openInShell } from "@tauri-apps/plugin-shell"
 // the bundle.  The animated dancer GIF still plays during slurmify
 // processing (in the OUTPUT module); for the brand mark a still
 // portrait is the right read.
-import sienaIcon from "../graphic/icon/subvoyant.iconset/icon_128x128.png"
+// Path was previously `../graphic/icon/subvoyant.iconset/...` which broke
+// CI: graphic/ is gitignored (5+ GB of stock packs), so the icon never
+// reached the runner.  The icon is ALSO tracked at top-level `icon/`,
+// which IS in git.  Point at the tracked copy.  Both local-dev and CI
+// resolve the same path now.
+import sienaIcon from "../icon/subvoyant.iconset/icon_128x128.png"
 
 import { SkinPicker } from "./components/SkinPicker"
 import { Button } from "./components/ui/button"

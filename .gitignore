@@ -55,8 +55,23 @@ notarize_creds.sh
 .idea/
 *.swp
 
-# Graphics source — large binaries; reference gifs are base64-inlined into ui_assets.py
-graphic/
+# Graphics source — mostly large binaries (stock footage packs, AE/PSD
+# sources, ~5 GB total).  Ignored by default to keep the repo lean.
+# A handful of small files inside graphic/ are RUNTIME assets the React
+# app actually imports (easter-egg GIFs); those need to ship to CI and
+# end users via the bundled frontend.  Allow them back through with
+# explicit !-rules.  Pattern is `graphic/*` not `graphic/` because git
+# never descends into a fully-ignored directory, so negation only works
+# when the directory itself isn't ignored.
+graphic/*
+!graphic/.gitkeep
+!graphic/MaxFire02.gif
+!graphic/max.gif
+!graphic/hobermanmax.gif
+!graphic/RGBOB.gif
+# graphic/sienaSlrum_A001.aep is already tracked (pre-dates this rule);
+# don't need an explicit !-line for it.
+
 DMG_builds/
 
 # ── Tauri 2 + React frontend (v0.2.0, ADR-0022) ────────────────────────
