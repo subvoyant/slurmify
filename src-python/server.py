@@ -51,6 +51,47 @@ import sys
 import tempfile
 import time
 
+
+# ── Force UTF-8 stdout/stderr (Windows-charmap fix) ─────────────────────
+# Background: Slurmcore's progress messages and a handful of debug prints
+# contain Unicode characters — right arrows (→), check marks (✓),
+# ellipses (…), en/em dashes (–/—), approximate-equals (≈), plus/minus
+# (±).  On macOS and Linux, sys.stdout defaults to UTF-8 and these print
+# cleanly.  On Windows, sys.stdout's default encoding is whatever the
+# active console code page is — usually CP-1252 ("charmap"), which has
+# no glyph for any of those.  The first print() with a Unicode char
+# crashes with:
+#     'charmap' codec can't encode character '→' in position 49:
+#     character maps to <undefined>
+# That's exactly the failure mode v0.2.1-win-4 hit on Bob's laptop
+# during slurmify processing (at slurmcore.py:1247-1249's makeup-gain
+# print, the → at column 49).
+#
+# Fix: at the very top of server startup, BEFORE any import or print
+# that could touch a Unicode literal, reconfigure stdout + stderr to
+# UTF-8.  This is a Python 3.7+ feature; the bundled sidecar runs
+# Python 3.12 so it's safe to call unconditionally.
+#
+#   errors="backslashreplace" — defence in depth.  If we ever ship a
+#   character that's somehow still unmappable, Python writes a
+#   `\uXXXX` escape instead of raising, so a buggy Unicode literal
+#   produces a slightly-uglier log line rather than a 500 in the API.
+#
+# Runs on macOS too — it's a no-op there (already UTF-8) but makes the
+# code path symmetric across platforms, which keeps future debugging
+# simpler.  The Tauri-shell `slurmify_ready` JSON line printed below is
+# pure ASCII so it survives any encoding choice.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+except (AttributeError, Exception):
+    # Pre-3.7 Python or an unusual stream subclass that doesn't support
+    # reconfigure().  Silently fall through — better to skip the fix
+    # than to crash startup over it.  In practice this branch is
+    # unreachable in our bundled sidecar.
+    pass
+
+
 # ── sys.path bootstrap ──────────────────────────────────────────────────
 # Add the repository root (one level above this file) so `import
 # slurmcore` / `import slurmio` work.  This must happen BEFORE any
